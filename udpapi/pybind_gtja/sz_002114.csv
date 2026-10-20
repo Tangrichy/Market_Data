@@ -1,3 +1,0 @@
-recv_time,conn_id,exchange,symbol,date,time,milli,last_price,volume,turnover,open_interest,bid_price_1,bid_volume_1,ask_price_1,ask_volume_1,status
-2026-07-10 10:42:54.446,0,SZSE,002114,20260710,10:42:54,000,6.52,4025100,25992818.0,0.0,6.51,4200,6.52,100,T0
-2026-07-10 10:43:03.446,0,SZSE,002114,20260710,10:43:03,000,6.52,4025300,25994122.0,0.0,6.51,3900,6.529999999999999,45600,T0
