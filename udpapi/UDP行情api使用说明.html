@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>UDP行情api使用说明.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="udp%E8%A1%8C%E6%83%85api%E8%AF%B4%E6%98%8E%E7%89%88%E6%9C%ACv3706">UDP行情api说明(版本：V3.7.0.6)</h1>
+<ol>
+<li>
+<p><strong>UDP行情在3.5版本之前仅支持组播行情，即正常收取行情时，为无连接组播收取，但在3.5版本之后，还支持TCP单播模式，具体使用哪种模式取决于后台服务端配置，不取决于api端设置。为方便管理，api需要首先进行登录认证，目的在于能够记录哪些客户使用该api进行收取行情，以便日后升级改造时，能够及时通知客户。</strong></p>
+</li>
+<li>
+<p><strong>UDP行情api在登录认证时，使用的是tcp协议，通常登录账号为资金账号（需要提前向期货公司告之资金账号），密码一般为8个8。在组播或广播模式时，登录完成后，会主动断开认证的tcp连接，并开始加入组播监听数据，后续就仅监听组播数据，不再连接认证服务器；但在TCP单播模式时，api会始终连接服务端，不会断开。</strong></p>
+</li>
+<li>
+<p><strong>UDP行情api使用时，采用与CTP接口类似的回调机制，即主要通过两个接口来返回数据：</strong></p>
+<ul>
+<li>
+<p><strong>OnRspLastSnapshot：</strong><br>
+该函数返回快照数据，仅在登录成功后返回一次，后续不再有返回。</p>
+<p>该数据是登录服务器自己监听到的组播数组，缓存在本地，在用户登录成功后，一次性发送给客户的数据。该数据不一定总会返回，取决于登录服务器能否正确监听到组播数据。</p>
+</li>
+<li>
+<p><strong>OnRtnDepthSnapshot：</strong></p>
+<ul>
+<li>
+<p>该函数返回接收到的组播数据，为实时数据，只要有行情推送过来，它总会不断地调用。</p>
+</li>
+<li>
+<p>该函数返回的数据为增量数据，即它的参数中pTradeInfo，pBaseInfo, pStaticInfo和pMBL不一定总有值，可能为NULL。为NULL时，表示当前收到的行情，以上字段没有更新。使用时，一定要注意判断是否为NULL。但pHeader一定不为NULL。</p>
+</li>
+<li>
+<p>另外UDP行情接口实际上可以发送不只一档盘口数据，即pMBL有可能是多档数据，具体有多少档，视nMBLLength而定。例如，对于一档行情，通常pMBL不为NULL时，nMBLLength为1。</p>
+</li>
+<li>
+<p>3.7.0.2后新增加上交所、深交所合约状态信息推送，结构体为：</p>
+</li>
+</ul>
+<pre class="hljs"><code><div><span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">GtjaMdInstrumentStatusV3</span>
+{</span>
+    <span class="hljs-keyword">uint16_t</span> InstrumentType;<span class="hljs-comment">//合约种类</span>
+    <span class="hljs-keyword">char</span> MDStreamID[<span class="hljs-number">6</span>];     <span class="hljs-comment">//行情类别</span>
+    <span class="hljs-keyword">char</span> InstrumentStauts[<span class="hljs-number">8</span>];<span class="hljs-comment">//合约状态</span>
+};
+</div></code></pre>
+<ol>
+<li>上述字段中，如合约为上交所的，则<code>InstrumentType</code>为上交所行情中的SecurityType，<code>InstrumentStauts</code>为上交所行情中的TradingPhaseCode,为8位字符串，左起每位表示特定的含义，无定义则填空格。该字段具体含义在不同行情类别时说明如下：含义如下：</li>
+</ol>
+  <table border="1">
+  <thead>
+  <tr>
+  <th rowspan="2">SecurityType</th>
+  <th rowspan="2">MDStreamID</th>
+  <th rowspan="2">说明</th>
+  <th colspan="4">TradingPhaseCode</th>
+  </tr>
+  <tr>
+  <th>第1位</th>
+  <th>第2位</th>
+  <th>第3位</th>
+  <th>第4位</th>
+  </tr>
+  </thead>
+  <tbody>
+  <tr>
+  <td rowspan="4">1</td>
+  <td>MD001</td>
+  <td>指数类产品</td>
+  <td></td><td></td><td></td><td></td>
+  </tr>
+  <tr>
+  <td>MD002</td>
+  <td>股票（A、B 股）类产品</td>
+  <td rowspan="3">‘S’表示启动（开市前）时段，<br/>‘C’表示开盘集合竞价时段，<br/>‘T’表示连续交易时段，<br/>‘E’表示闭市时段，<br/>‘P’表示产品停牌，<br/>‘M’表示可恢复交易的熔断时段（盘中集合竞价），<br/>‘N’表示不可恢复交易的熔断时段（暂停交易至闭市），<br/>‘U’表示收盘集合竞价时段。</td>
+  <td rowspan="3">‘0’表示此产品不可正常交易，<br/>‘1’表示此产品可正常交易。<br/>在产品进入开盘集合竞价、连续交易、收盘集合竞价、熔断（盘中集合竞价）状态时值为‘1’，<br/>在产品进入停牌、熔断（暂停交易至闭市）状态时值为‘0’，且闭市后保持该产品闭市前的是否可正常交易状态。</td>
+  <td rowspan="3">0’表示未上市，‘1’表示已上市。</td>
+  <td rowspan="3">‘0’表示此产品在当前时段不接受进行新订单申报，<br/>‘1’ 表示此产品在当前时段可接受进行新订单申报。<br/>仅在交易时段有效，在非交易时段无效。</td>
+  </tr>
+  <tr>
+  <td>MD003</td>
+  <td>债券类产品</td>
+  </tr>
+  <tr>
+  <td>MD004</td>
+  <td>基金类产品</td>
+  </tr>
+  <tr>
+  <td>2</td>
+  <td>MD301</td>
+  <td>期权类产品</td>
+  <td>‘S’表示启动（开市前）时段，<br/>‘C’表示集合竞价时段，<br/>‘T’表示连续交易时段，<br/>‘B’表示休市时段，<br/>‘E’表示闭市时段，<br/>‘V’ 表示波动性中断，<br/>‘P’表示临时停牌、<br/>‘U’表示收盘集合竞价。<br/>‘M’ 表示可恢复交易的熔断（盘中集合竞价）,<br/>‘N’ 表示不可恢复交易的熔断（暂停交易至闭市）</td>
+  <td>‘0’表示未连续停牌，<br/>‘1’表示连续停牌。（预留，暂填空格）</td>
+  <td>‘0’表示不限制开仓，<br/>‘1’表示限制备兑开仓，<br/>‘2’表示卖出开仓，<br/>‘3’表示限制卖出开仓、备兑开仓，<br/>‘4’表示限制买入开仓，<br/>‘5’表示限制买入开仓、备兑开仓，<br/>‘6’表示限制买入开仓、卖出开仓，<br/>‘7’表示限制买入开仓、卖出开仓、备兑开仓</td>
+  <td>‘0’表示此产品在当前时段不接受进行新订单申报，<br/>‘1’ 表示此产品在当前时段可接受进行新订单申报。仅在交易时段有效，在非交易时段无效。</td>
+  </tr>
+  <tr>
+  <td rowspan="2">3</td>
+  <td>MD101</td>
+  <td>国债预发行产品</td>
+  <td>‘S’表示启动（开市前）时段，‘C’表示集合竞价时段，‘T’表示连续交易时段， ‘E’表示闭市时段，‘P’表示停牌。</td>
+  <td></td><td></td><td></td>
+  </tr>
+  <tr>
+  <td>MD102</td>
+  <td>盘后固定价格</td>
+  <td>‘I’表示启动（开市前）时段，‘A’表示集中撮合时段，‘H’表示连续交易时段， ‘D’表示闭市时段，‘F’表示停牌。</td>
+  <td></td><td></td><td></td>
+  </tr>
+  </tbody>
+  </table>
+  1. 如合约为深交所，则`InstrumentType`为深交所行情中的ChannelNo，`InstrumentStauts`为深交所行情中的TradingPhaseCode，各位含义如下：  
+  <table border="1">
+  <thead>
+  <tr>
+  <td rowspan="2">ChannelNo<br/>(x表示0-9的数字)</td>
+  <td rowspan="2">说明</td>
+  <td colspan="2">TradingPhaseCode</td>
+  </tr>
+  <tr><td>第1位</td><td>第2位</td>
+  </tr>
+  </thead>
+  <tbody>
+  <tr>
+  <td>101x</td>
+  <td>股票</td>
+  <td rowspan="6">S=启动（开市前）<br/>
+  O=开盘集合竞价<br/>
+  T=连续竞价<br/>
+  B=休市<br/>
+  C=收盘集合竞价<br/>
+  E=已闭市<br/>
+  H=临时停牌<br/>
+  A=盘后交易<br/>
+  V=波动性中断</td>
+  <td rowspan="6">0=正常状态<br/>
+  1=全天停牌</td>
+  </tr>
+  <tr>
+  <td>102x</td>
+  <td>基金</td>
+  </tr>
+  <tr>
+  <td>103x</td>
+  <td>债券</td>
+  </tr>
+  <tr>
+  <td>104x</td>
+  <td>权证</td>
+  </tr>
+  <tr>
+  <td>105x</td>
+  <td>期权</td>
+  </tr>
+  <tr>
+  <td>106x</td>
+  <td>质押式回购</td>
+  </tr>
+  </tbody>
+  </table> 
+</li>
+</ul>
+</li>
+<li>
+<p><strong>UDP行情api不仅可以用于收取一档行情，也可以用于收取多档行情，具体视后端服务发送什么样的数据。例如，如果对接一档UDP行情，它收到的数据仅有1档数据，如果对接深度UDP行情，它接收到的就是多档数据。</strong></p>
+</li>
+<li>
+<p><strong>Api使用时，可通过SetConfig(key,value)设置多种参数，目前支持的key参数有：</strong></p>
+<ul>
+<li><strong>cpu:</strong> Api内部仅创建一个线程，可使用此参数绑定该线程的cpu。value的取值形式为taskset类似，为从0开始的cpu核序号，如果绑定多个cpu核，可以以英文逗号分隔，或者使用连字符'-'指定连续的cpu核序列，例如<code>pApi-&gt;SetConfig(&quot;cpu&quot;,&quot;3,5-9&quot;);</code>，意思为可绑定序号为3，5，6，7，8，9的cpu。默认不绑定cpu，让OS自动分配。</li>
+<li><strong>efvi:</strong> 此参数用于设置api内部接收数据时尝试以efvi进行接收，不成功时再尝试使用其它类型方式接收。此参数仅在linux环境，并且用于udp数据时有效。默认为true，如想关闭则要显式地设置为false。如<code>pApi-&gt;SetConfig(&quot;efvi&quot;,&quot;false&quot;);</code>。</li>
+<li><strong>exanic:</strong> 此参数用于设置api内部接收数据时尝试以exanic进行接收，不成功时再尝试使用其它类型方式接收。此参数仅在linux环境，并且用于udp数据时有效。默认为true，如想关闭则要显式地设置为false。如<code>pApi-&gt;SetConfig(&quot;exanic&quot;,&quot;false&quot;);</code>。</li>
+<li><strong>exanic_buffer_number:</strong> 当使用exanic网卡时，如api内部使用exanic加速，可通过此参数设置api创建exanic rx buffer时所使用的buffer number，以避免与其它应用使用的buffer number冲突。默认api使用buffer number为4，如要修改为其它值，请通过此参数修改。如<code>pApi-&gt;SetConfig(&quot;exanic_buffer_number&quot;,&quot;3&quot;);</code>。</li>
+<li><strong>取消此前的nonblock及efvi_nic参数：</strong>
+<ul>
+<li><strong>nonblock:</strong> 目前api自行决定采用block或者nonblock模式接收数据，原则是在必要的情况下，会用nonblock方式接收，比如使用efvi的时候。</li>
+<li><strong>efvi_nic:</strong> 参数使用<strong>efvi</strong>来替代，api自动判断使用nic网口名称，无须指定。</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p><strong>3.7及之上的版本的api支持同时接收多个数据源的数据，可多次调用RegisterFront注册多次数据源，其返回值代表该数据源的ConnectID，用于唯一标识该数据源。在后续各请求及回调中，均有ConnectID字段，用于区别不同的数据源。</strong></p>
+</li>
+<li>
+<p><strong>Api订阅功能仅在非局域网的tcp单播模式下有效，同时取决于后台服务端设置情况。当后台不支持订阅功能时，调用ReqSubMarketData及ReqSubMarketData时均会返回_rc_not_support错误。</strong><br>
+<strong>订阅及取消订阅函数均可同时订阅多个合约，第一个参数pInstrument合约结构体数组地址，第二个参数nInstrumentCount指明数据长度。目前无数组长度限制，只要调用api的客户端的内存放得下都行。</strong><br>
+<strong>GtjaMdSpecificInstrumentField结构体目前有三个参数：</strong></p>
+<ul>
+<li><strong>ProductType:</strong> 目前不生效，不用设置。</li>
+<li><strong>ExchangeType:</strong> 可选参数，不设定时指定为0。如指定，则只订阅指定交易所下的合约。</li>
+<li><strong>InstrumentID:</strong> 必填写参数，置空或者设置为&quot;<em>&quot;表示所有合约; 可指定单个具体合约, 如cu2105; 也可以在末尾加</em>通配符来匹配一批合约，比如订阅所有铜合约：cu*。</li>
+</ul>
+</li>
+<li>
+<p><strong>Api开发包中有Demo，可作参考。</strong></p>
+</li>
+</ol>
+<hr>
+<h3 id="%E6%9B%B4%E6%96%B0%E8%AF%B4%E6%98%8E"><strong>更新说明</strong></h3>
+<ul>
+<li>
+<p><strong>V3.7.0.6</strong><br>
+20221227，Linux版本增加对Exanic网卡加速的支持。</p>
+</li>
+<li>
+<p><strong>V3.7.0.5</strong><br>
+20220906，修复订阅（取消订阅）合约数过多（超过100）时，引发的tcp连接断开问题。</p>
+</li>
+<li>
+<p><strong>V3.7.0.4</strong><br>
+20220905，修复订阅（取消订阅）函数中，当合约数大于8时，引发的Api内部崩溃问题。</p>
+</li>
+<li>
+<p><strong>V3.7.0.3</strong><br>
+20220105，增加gcc7,8,9版本编译。</p>
+<p>20210225, 修改普通socket由非阻塞模式改为select，节约cpu资源; 修改efvi接收优数据优先级。</p>
+</li>
+<li>
+<p><strong>V3.7.0.2</strong><br>
+20210202, 增加上证、深证合约状态推送；登录附加信息扩展，容纳更多信息。</p>
+</li>
+<li>
+<p><strong>V3.7.0.1</strong><br>
+20201214, 增加订阅功能支持，但具体能否订阅取决于后台是否支持，比如局域网组播就不支持订阅功能
+20201216, 增加支持同时订阅多个行情源功能，在同一线程内实现接收多个行情功能，节省占用cpu核数。</p>
+</li>
+</ul>
+
+</body>
+</html>

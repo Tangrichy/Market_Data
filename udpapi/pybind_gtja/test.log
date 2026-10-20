@@ -1,0 +1,39 @@
+[2026-07-09 14:40:40.861674] GtjaMdUserApi::RegisterSpi:28531408
+[2026-07-09 14:40:40.861915] Get cpu setting: cpu=1, try to set cpu affinity...
+[2026-07-09 14:40:40.863545] Set cpu affinity succ!
+[2026-07-09 14:40:40.875327] GtjaMdUserApi Start Release...
+[2026-07-09 14:40:40.875480] GtjaMdUserApi Released.
+[2026-07-09 14:44:02.347538] GtjaMdUserApi::RegisterSpi:21739024
+[2026-07-09 14:44:02.358630] Get cpu setting: cpu=1, try to set cpu affinity...
+[2026-07-09 14:44:02.358826] Set cpu affinity succ!
+[2026-07-09 14:44:02.358990] GtjaMdUserApi Start Release...
+[2026-07-09 14:44:02.359101] GtjaMdUserApi Released.
+[2026-07-13 10:21:04.359465] GtjaMdUserApi::RegisterSpi:28141952
+[2026-07-13 10:21:04.367357] Get cpu setting: cpu=1, try to set cpu affinity...
+[2026-07-13 10:21:04.367515] Set cpu affinity succ!
+[2026-07-13 10:21:04.367649] GtjaMdUserApi Start Release...
+[2026-07-13 10:21:04.367755] GtjaMdUserApi Released.
+[2026-07-13 10:22:30.483240] GtjaMdUserApi::RegisterSpi:17424624
+[2026-07-13 10:22:30.502025] Get cpu setting: cpu=1, try to set cpu affinity...
+[2026-07-13 10:22:30.502250] Set cpu affinity succ!
+[2026-07-13 10:22:30.502389] 0 GtjaMdUserApi::RegisterFront:tcp://183.63.193.58:42116
+[2026-07-13 10:22:30.502580] GtjaMdUserApi Start Init, compiled version:GtjaMdUserApi Linux x64 V3.7.0.6 build 20221227
+[2026-07-13 10:22:30.503004] GtjaMdUserApi End Init.[2026-07-13 10:22:30.503087] 
+Recv thread started.
+[2026-07-13 10:22:32.505363] GtjaMdUserApi Start Release...
+[2026-07-13 10:23:10.681930] GtjaMdUserApi::RegisterSpi:20077200
+[2026-07-13 10:23:10.682147] Get cpu setting: cpu=1, try to set cpu affinity...
+[2026-07-13 10:23:10.682242] Set cpu affinity succ!
+[2026-07-13 10:23:10.682291] 0 GtjaMdUserApi::RegisterFront:tcp://114.94.154.60:21002
+[2026-07-13 10:23:10.682372] GtjaMdUserApi Start Init, compiled version:GtjaMdUserApi Linux x64 V3.7.0.6 build 20221227
+[2026-07-13 10:23:10.682745] GtjaMdUserApi End Init.[2026-07-13 10:23:10.682793] 
+Recv thread started.
+[2026-07-13 10:23:15.683061] GtjaMdUserApi Start Release...
+[2026-07-13 10:24:22.124727] GtjaMdUserApi::RegisterSpi:34695824
+[2026-07-13 10:24:22.138753] Get cpu setting: cpu=1, try to set cpu affinity...
+[2026-07-13 10:24:22.138850] Set cpu affinity succ!
+[2026-07-13 10:24:22.138909] 0 GtjaMdUserApi::RegisterFront:tcp://114.94.154.60:21002
+[2026-07-13 10:24:22.138974] GtjaMdUserApi Start Init, compiled version:GtjaMdUserApi Linux x64 V3.7.0.6 build 20221227
+[2026-07-13 10:24:22.139319] GtjaMdUserApi End Init.
+[2026-07-13 10:24:22.139433] Recv thread started.
+[2026-07-13 10:24:27.139588] GtjaMdUserApi Start Release...
