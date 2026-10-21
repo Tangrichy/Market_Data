@@ -117,7 +117,7 @@ MARKET_DATA_SERVER: str = MARKET_DATA_SERVERS[SERVER_INDEX]
 # 3. 订阅合约与其他参数
 # ============================================================
 # 订阅的合约代码（上期所黄金期货示例，请根据当前主力合约修改）
-GOLD_SYMBOL: str = "ag2608"
+GOLD_SYMBOL: str = "ag2612"
 
 # 连接和登录超时时间（秒）
 WAIT_TIME: int = 20

@@ -1,27 +1,31 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Demo: 使用 pybind11 封装的国泰君安 UDP 行情 API 快速拉取实时 tick 数据。
+Demo: 使用 pybind11 封装的国泰君安 UDP 行情 API 快速拉取沪深股票实时 tick 数据。
+
+本工具仅用于股票行情（上交所/深交所），不支持期货合约。
 
 运行前请先编译扩展模块：
     source /opt/conda/etc/profile.d/conda.sh && conda activate py39
-    cd /root/private_data/trading/udpapi/pybind_gtja
+    cd /root/private_data/Market_Data/pybind_gtja
     python setup.py build_ext --inplace
 
 用法：
-    python pull_data.py --front tcp://127.0.0.1:42116 --user 00000001 --password 88888888 --symbols cu2501 rb2501
+    python pull_data.py --front tcp://183.193.54.200:21002 --user 00000001 --password 88888888 --symbols 600000,688027 --exchange sse
 
 运行中可在控制台输入命令：
-    sub 合约1 合约2 ...    # 动态订阅
-    unsub 合约1 合约2 ...  # 动态取消订阅
+    sub 代码1 代码2 ...    # 动态订阅（仅股票）
+    unsub 代码1 代码2 ...  # 动态取消订阅
     exit / quit / q        # 退出程序
     help / h / ?           # 显示帮助
 
 环境变量（与命令行等价）：
-    GTJA_FRONT, GTJA_USER, GTJA_PASSWORD, GTJA_SYMBOLS, GTJA_CPU, GTJA_NO_EFVI, GTJA_LEVELS
+    GTJA_FRONT, GTJA_USER, GTJA_PASSWORD, GTJA_SYMBOLS, GTJA_EXCHANGE,
+    GTJA_CPU, GTJA_NO_EFVI, GTJA_OUTPUT, GTJA_DURATION, GTJA_LEVELS
 """
 import argparse
 import csv
+import glob
 import os
 import queue
 import sys
@@ -30,7 +34,48 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-import gtja_udp_api
+try:
+    import gtja_udp_api
+except ImportError as _exc:
+    # 扩展的 ABI 标签必须是 cpython-<版本>，与解释器不一致时 Python 会直接
+    # 忽略该 .so 并报 ModuleNotFoundError。这里扫描同目录找出实际编译版本，
+    # 给出明确指引（3.9 / 3.12 等任意版本通用）。
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _built = sorted(
+        os.path.basename(_p)[len("gtja_udp_api."):-len(".so")]
+        for _p in glob.glob(os.path.join(_here, "gtja_udp_api*.so"))
+    )
+    _want = "cpython-%d%d" % sys.version_info[:2]
+
+    _lines = [
+        "导入 gtja_udp_api 失败：%s" % _exc,
+        "当前解释器：Python %s（%s）" % (sys.version.split()[0], sys.executable),
+    ]
+    if _built:
+        _lines.append("目录中已有扩展：%s" % "、".join(_built))
+        if not any(_want in _tag for _tag in _built):
+            _lines.append(
+                "→ ABI 不匹配：已有扩展是为 %s 编译的，当前解释器需要 %s。\n"
+                "  方案一：改用匹配的解释器运行（如 /opt/conda/envs/py39/bin/python）；\n"
+                "  方案二：在当前解释器下重新编译（推荐，见下）。" % (_built[0], _want)
+            )
+        else:
+            _lines.append(
+                "→ ABI 匹配但加载失败，通常是找不到动态库 libGtjaMdUserApi.so，"
+                "或编译用的 Python 与当前解释器不是同一个。"
+            )
+    else:
+        _lines.append("→ 未找到任何 gtja_udp_api*.so，需要先编译。")
+
+    _lines.append(
+        "在当前解释器下重新编译：\n"
+        "  cd pybind_gtja && rm -rf build\n"
+        "  pip install 'pybind11>=2.11.1'\n"
+        "  python setup.py build_ext --inplace\n"
+        "若仍报找不到 libGtjaMdUserApi.so：\n"
+        "  export LD_LIBRARY_PATH=<仓库根目录>/udpapi/Linux64/gcc9.3.1:$LD_LIBRARY_PATH"
+    )
+    sys.exit("\n".join(_lines))
 
 
 # ---------------------------------------------------------------------------
@@ -41,9 +86,10 @@ def get_config():
     parser.add_argument("--front", default=os.getenv("GTJA_FRONT", "tcp://114.94.154.60:21002"), help="行情前置地址") #"tcp://127.0.0.1:42116" 183.63.193.58:42116 tcp://114.94.154.60:21002
     parser.add_argument("--user", default=os.getenv("GTJA_USER", "83607651"), help="资金账号")
     parser.add_argument("--password", default=os.getenv("GTJA_PASSWORD", "88888888"), help="登录密码")
-    parser.add_argument("--symbols", default=os.getenv("GTJA_SYMBOLS", "000001"), help="订阅合约，逗号分隔")
+    parser.add_argument("--symbols", default=os.getenv("GTJA_SYMBOLS", "000001"),
+                        help="订阅股票代码（6 位数字），逗号分隔")
     parser.add_argument("--exchange", default=os.getenv("GTJA_EXCHANGE", ""),
-                        help="指定交易所: sse/szse/shfe/dce/czce/cffex/ine/sge，空表示不指定")
+                        help="指定交易所: sse/szse（本工具仅支持股票），空表示不指定")
     parser.add_argument("--cpu", default=os.getenv("GTJA_CPU", "1"), help="绑定 CPU 核")
     parser.add_argument("--no-efvi", action="store_true", default=os.getenv("GTJA_NO_EFVI", "").lower() == "true",
                         help="关闭 efvi 加速")
@@ -57,17 +103,11 @@ def get_config():
 
 
 # ---------------------------------------------------------------------------
-# 交易所代码 → 可读前缀
+# 交易所代码 → 可读前缀（仅股票：上交所/深交所）
 # ---------------------------------------------------------------------------
 EXCHANGE_NAMES = {
-    gtja_udp_api._et_czce: "CZCE",
-    gtja_udp_api._et_dce: "DCE",
-    gtja_udp_api._et_shfe: "SHFE",
-    gtja_udp_api._et_cffex: "CFFEX",
-    gtja_udp_api._et_ine: "INE",
     gtja_udp_api._et_sse: "SSE",
     gtja_udp_api._et_szse: "SZSE",
-    gtja_udp_api._et_sge: "SGE",
 }
 
 RTN_CODE_NAMES = {
@@ -83,22 +123,20 @@ RTN_CODE_NAMES = {
 EXCHANGE_NAME_TO_TYPE = {
     "sse": gtja_udp_api._et_sse,
     "szse": gtja_udp_api._et_szse,
-    "shfe": gtja_udp_api._et_shfe,
-    "dce": gtja_udp_api._et_dce,
-    "czce": gtja_udp_api._et_czce,
-    "cffex": gtja_udp_api._et_cffex,
-    "ine": gtja_udp_api._et_ine,
-    "sge": gtja_udp_api._et_sge,
 }
 
 
+def validate_stock_symbols(symbols: List[str]) -> List[str]:
+    """返回不符合沪深股票代码规则（6 位数字）的合约。"""
+    return [s for s in symbols if not (len(s) == 6 and s.isdigit())]
+
+
 def build_instruments(symbols: List[str], exchange: str = ""):
-    """根据合约代码和交易所构建订阅结构体数组。"""
+    """根据股票代码和交易所构建订阅结构体数组（仅上交所/深交所）。"""
     exch_type = EXCHANGE_NAME_TO_TYPE.get(exchange.lower(), gtja_udp_api._et_unset) if exchange else gtja_udp_api._et_unset
     insts = []
     for s in symbols:
         inst = gtja_udp_api.GtjaMdSpecificInstrumentField()
-        inst.ProductType = gtja_udp_api._pt_unset
         inst.ExchangeType = exch_type
         inst.InstrumentID = s
         insts.append(inst)
@@ -293,11 +331,20 @@ class DataSpi(gtja_udp_api.PySpi):
 # ---------------------------------------------------------------------------
 def main():
     cfg = get_config()
+    cfg.exchange = cfg.exchange.strip().lower()
+    if cfg.exchange and cfg.exchange not in EXCHANGE_NAME_TO_TYPE:
+        print("错误: 本工具仅支持股票，--exchange 只能为 sse 或 szse")
+        sys.exit(2)
+
     if not cfg.user or not cfg.password:
         print("错误: 必须提供 --user 和 --password")
         sys.exit(1)
 
     symbols = [s.strip() for s in cfg.symbols.split(",") if s.strip()]
+    invalid = validate_stock_symbols(symbols)
+    if invalid:
+        print(f"错误: 本工具仅支持沪深股票代码（6 位数字），不支持: {', '.join(invalid)}")
+        sys.exit(2)
     if not symbols:
         print("警告: 未指定订阅合约，登录后不会收到行情。使用 --symbols 指定，逗号分隔。")
 
@@ -357,6 +404,12 @@ def main():
     def _send_sub(syms: list):
         if not syms:
             return
+        invalid = validate_stock_symbols(syms)
+        if invalid:
+            print(f"仅支持沪深股票代码（6 位数字），已忽略: {', '.join(invalid)}")
+            syms = [s for s in syms if s not in invalid]
+            if not syms:
+                return
         insts = build_instruments(syms, cfg.exchange)
         with api_call_lock:
             ret = api.ReqSubMarketData(insts, 0, conn_id)
@@ -379,7 +432,7 @@ def main():
             print(f"已发送取消订阅: {syms}")
 
     def command_loop():
-        print("命令行已就绪。输入: sub 合约1 合约2 | unsub 合约1 合约2 | exit")
+        print("命令行已就绪。输入: sub 股票代码... | unsub 股票代码... | exit")
         while not stop_event.is_set():
             try:
                 line = input().strip()
@@ -403,7 +456,7 @@ def main():
             elif cmd in ("unsub", "unsubscribe"):
                 _send_unsub(args)
             elif cmd in ("help", "h", "?"):
-                print("命令: sub 合约1 合约2 | unsub 合约1 合约2 | exit | help")
+                print("命令: sub 股票代码... | unsub 股票代码... | exit | help（仅支持沪深股票）")
             else:
                 print(f"未知命令: {cmd}。输入 help 查看支持命令。")
 
