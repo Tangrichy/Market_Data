@@ -11,7 +11,7 @@ CTP 黄金期货行情测试脚本 v2（基于原生 MdApi，带代理配置）
     pip install vnpy_ctp
 
 代理来源：当前 shell 环境变量中的 http_proxy / https_proxy
-python test_ctp_gold_tick_v2_mdapi_with_proxy.py
+python ctp_mdapi.py
 """
 
 # ============================================================
@@ -121,6 +121,10 @@ GOLD_SYMBOL: str = "ag2612"
 
 # 连接和登录超时时间（秒）
 WAIT_TIME: int = 20
+
+# 行情流文件（DialogRsp.con 等）保存目录，避免污染工作目录
+FLOW_PATH: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ctp_flow")
+os.makedirs(FLOW_PATH, exist_ok=True)
 # ============================================================
 
 
@@ -223,8 +227,13 @@ def main() -> None:
     api: MyMdApi = MyMdApi()
 
     # 创建 CTP 行情 API
-    # 参数为行情流文件保存路径，传空字符串表示使用当前目录
-    api.createFtdcMdApi("")
+    # 第一个参数为行情流文件保存路径
+    # vnpy_ctp >= 6.7 还需要第二个参数 production_mode（True=实盘，False=评测/模拟环境）
+    # 旧版本（如 6.6.x）只有路径一个参数，这里做兼容
+    try:
+        api.createFtdcMdApi(FLOW_PATH, True)
+    except TypeError:
+        api.createFtdcMdApi(FLOW_PATH)
 
     # 注册行情服务器地址
     api.registerFront(MARKET_DATA_SERVER)
