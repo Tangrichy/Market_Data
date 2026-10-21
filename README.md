@@ -190,11 +190,14 @@ libGtjaMdUserApi.so => /root/private_data/Market_Data/udpapi/Linux64/gcc9.3.1/li
 export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi/Linux64/gcc9.3.1:$LD_LIBRARY_PATH
 ```
 
-> **换机器 / 换目录后必须重新编译。** 仓库里提交的 `gtja_udp_api.cpython-39-x86_64-linux-gnu.so` 把绝对路径 `/root/private_data/trading/udpapi/...` 写进了 rpath，在新环境下即使能导入也会因找不到动态库而失败。重新编译会按本机实际路径重写 rpath：
+> **换机器 / 换目录后必须重新编译。** 仓库里提交的 `gtja_udp_api.cpython-39-x86_64-linux-gnu.so` 在旧构建目录下编译，rpath 被写成了当时的绝对路径 `/root/private_data/trading/udpapi/Linux64/gcc9.3.1`。换到本仓库或其他机器后该目录并不存在，即使能导入扩展也会因找不到动态库而失败。重新编译会按当前仓库的实际路径重写 rpath。
+
+以下命令**从仓库根目录**（`Market_Data/`）执行：
 
 ```bash
 rm -rf pybind_gtja/build
-cd pybind_gtja && python setup.py build_ext --inplace
+cd pybind_gtja
+python setup.py build_ext --inplace
 readelf -d gtja_udp_api*.so | grep -Ei 'rpath|runpath'   # 应指向本仓库的 udpapi/Linux64/gcc9.3.1
 ```
 
