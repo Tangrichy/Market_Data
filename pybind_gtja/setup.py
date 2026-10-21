@@ -18,10 +18,42 @@ import os
 # Paths to the official C++ API header and library
 # ---------------------------------------------------------------------------
 ROOT = os.path.dirname(os.path.abspath(__file__))
-UDPAPI_ROOT = os.path.dirname(ROOT)  # /root/private_data/trading/udpapi
+# SDK lives at <repo>/udpapi, i.e. one level above this directory.
+UDPAPI_ROOT = os.getenv("GTJA_UDPAPI_ROOT") or os.path.join(os.path.dirname(ROOT), "udpapi")
 
 INCLUDE_DIR = os.path.join(UDPAPI_ROOT, "include")
-LIB_DIR = os.path.join(UDPAPI_ROOT, "Linux64", "gcc9.3.1")
+
+
+def _pick_lib_dir():
+    """Locate the directory holding libGtjaMdUserApi.so.
+
+    Prefer the gcc9.3.1 build (what the extension is tuned for), but fall back
+    to any other shipped gcc variant so a fresh clone builds without edits.
+    """
+    override = os.getenv("GTJA_UDPAPI_LIB_DIR")
+    if override:
+        return override
+
+    linux64 = os.path.join(UDPAPI_ROOT, "Linux64")
+    for variant in ("gcc9.3.1", "gcc8.3.1", "gcc7.3.1", "gcc4.8.5", "gcc4.4.7"):
+        candidate = os.path.join(linux64, variant)
+        if os.path.exists(os.path.join(candidate, "libGtjaMdUserApi.so")):
+            return candidate
+    return os.path.join(linux64, "gcc9.3.1")  # let the compiler report the real error
+
+
+LIB_DIR = _pick_lib_dir()
+
+for _label, _path in (
+    ("头文件目录", INCLUDE_DIR),
+    ("动态库目录", LIB_DIR),
+):
+    if not os.path.isdir(_path):
+        raise SystemExit(
+            "找不到 %s: %s\n"
+            "请确认 udpapi SDK 位于 %s（或设置 GTJA_UDPAPI_ROOT 指向 SDK 根目录）。"
+            % (_label, _path, UDPAPI_ROOT)
+        )
 
 # Use rpath so the extension module can locate libGtjaMdUserApi.so at runtime
 # without requiring LD_LIBRARY_PATH.
@@ -34,8 +66,9 @@ ext_modules = [
         include_dirs=[INCLUDE_DIR, pybind11.get_include()],
         library_dirs=[LIB_DIR],
         libraries=["GtjaMdUserApi"],  # linker will look for libGtjaMdUserApi.so
-        # C++11 is enough for the API; keep compatible with the officially built library.
-        cxx_std=11,
+        # pybind11 >= 3.0 requires C++17; the officially built SDK library is
+        # ABI-compatible, so building the binding as C++17 is safe.
+        cxx_std=17,
         # Make sure the dynamic linker finds the shared library at load time.
         runtime_library_dirs=[RUNTIME_LIB_DIR],
         extra_link_args=["-Wl,-rpath," + RUNTIME_LIB_DIR],
