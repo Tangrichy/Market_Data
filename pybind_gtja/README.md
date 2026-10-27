@@ -46,7 +46,7 @@ rm -rf build
 /opt/conda/envs/rqsdk/bin/python -c "import gtja_udp_api; print('OK')"
 ```
 
-实测（2026-10-21，SSE 21002）：20 秒收到 95 条 tick，CSV 落盘正常；`api.Release()` 在 proxychains 下不返回，外层需套 `timeout`（返回 124 属正常）。
+实测（2026-10-21，SSE 21002）：20 秒收到 95 条 tick，CSV 落盘正常。SDK 的 `api.Release()` 会一直等待收包线程的 `select`，无行情时不返回；改用 `api.ReleaseWithTimeout(ms)`（`pull_data.py` 已默认使用，见 `--release-timeout`）。
 
 其他版本以 3.12 为例：
 
@@ -90,7 +90,7 @@ proxychains4 -q -f /etc/proxychains4.conf \
   --output sse_ticks.csv --duration 60
 ```
 
-> `-u` 用于关闭 stdout 缓冲；`api.Release()` 在 proxychains 下可能不返回，建议外层再套 `timeout`。
+> `-u` 用于关闭 stdout 缓冲。SDK 的 `Release()` 在收包线程静止时不返回，`pull_data.py` 默认走 `ReleaseWithTimeout()`（`--release-timeout`，默认 5000ms）。
 
 ### 上交所 / 深交所
 
@@ -126,6 +126,7 @@ export GTJA_USER=00000001
 export GTJA_PASSWORD=88888888
 export GTJA_SYMBOLS=600000,688027
 export GTJA_EXCHANGE=sse
+export GTJA_RELEASE_TIMEOUT=5000
 python pull_data.py
 ```
 
@@ -142,6 +143,7 @@ python pull_data.py
 - `--duration`: 运行时长（秒），默认 `0` 表示一直运行
 - `--levels`: CSV 保存的盘口档位数，默认 `5`
 - `--multi`: 打印全部档位（默认只打印第 1 档）
+- `--release-timeout`: `Release` 的有界等待毫秒数，默认 `5000`；`<=0` 恢复无限等待
 
 ## 支持范围
 
@@ -165,7 +167,7 @@ import gtja_udp_api
 api = gtja_udp_api.GtjaMdUserApi("api.log")
 ```
 
-释放时调用 `api.Release()`，或让对象自然析构即可。
+释放时优先调用 `api.ReleaseWithTimeout(ms)`：超时后中断 SDK 收包线程的 `select` 等待，返回耗时毫秒数；`api.LastReleaseAbandoned` 为真表示 SDK 仍未返回、该实例已被放弃（不阻塞调用方）。`api.Release()` 保留原始语义（无限等待，但不再持有 GIL），析构有 2 秒上限。无前置、无账号的离线复现见 `repro_release_hang.py`。
 2. 运行时应能通过 `rpath` 自动找到动态库；如仍报找不到库，可手动设置：
    ```bash
    export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi/Linux64/gcc9.3.1:$LD_LIBRARY_PATH

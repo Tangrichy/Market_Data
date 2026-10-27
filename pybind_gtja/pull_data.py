@@ -21,7 +21,8 @@ Demo: 使用 pybind11 封装的国泰君安 UDP 行情 API 快速拉取沪深股
 
 环境变量（与命令行等价）：
     GTJA_FRONT, GTJA_USER, GTJA_PASSWORD, GTJA_SYMBOLS, GTJA_EXCHANGE,
-    GTJA_CPU, GTJA_NO_EFVI, GTJA_OUTPUT, GTJA_DURATION, GTJA_LEVELS
+    GTJA_CPU, GTJA_NO_EFVI, GTJA_OUTPUT, GTJA_DURATION, GTJA_LEVELS,
+    GTJA_RELEASE_TIMEOUT
 """
 import argparse
 import csv
@@ -99,6 +100,10 @@ def get_config():
     parser.add_argument("--levels", type=int, default=int(os.getenv("GTJA_LEVELS", "5")),
                         help="CSV 中保存的盘口档位数，默认 5")
     parser.add_argument("--multi", action="store_true", help="打印时输出全部档位（默认只输出第 1 档）")
+    parser.add_argument("--release-timeout", type=int,
+                        default=int(os.getenv("GTJA_RELEASE_TIMEOUT", "5000")),
+                        help="Release 的有界等待（毫秒）：超时后中断 SDK 收包线程的 select 等待；"
+                             "<=0 表示沿用原始的无限等待")
     return parser.parse_args()
 
 
@@ -331,6 +336,7 @@ class DataSpi(gtja_udp_api.PySpi):
 # ---------------------------------------------------------------------------
 def main():
     cfg = get_config()
+    print("[stage] before_main", flush=True)
     cfg.exchange = cfg.exchange.strip().lower()
     if cfg.exchange and cfg.exchange not in EXCHANGE_NAME_TO_TYPE:
         print("错误: 本工具仅支持股票，--exchange 只能为 sse 或 szse")
@@ -485,10 +491,29 @@ def main():
     finally:
         stop_event.set()
         if subscribed_symbols and supports_sub:
+            print("[stage] before_ReqUnSubMarketData", flush=True)
             _send_unsub(list(subscribed_symbols))
+            print("[stage] after_ReqUnSubMarketData", flush=True)
             time.sleep(0.5)
-        api.Release()
+
+        # The SDK's Release() joins a receive thread that is parked in an
+        # untimed select(), so it never returns while no data is arriving.
+        # ReleaseWithTimeout() interrupts that wait and returns either way.
+        print(f"[stage] before_Release ticks={tick_count}", flush=True)
+        if cfg.release_timeout > 0 and hasattr(api, "ReleaseWithTimeout"):
+            elapsed = api.ReleaseWithTimeout(cfg.release_timeout)
+            print(f"[stage] after_Release elapsed_ms={elapsed} "
+                  f"wakeups={api.LastReleaseWakeups} abandoned={api.LastReleaseAbandoned}",
+                  flush=True)
+        else:
+            if not hasattr(api, "ReleaseWithTimeout"):
+                print("警告: 当前扩展不支持 ReleaseWithTimeout（可能是旧版本），"
+                      "Release 可能不返回；请按 README 重新编译扩展。", flush=True)
+            api.Release()
+            print("[stage] after_Release", flush=True)
+
         spi.close()
+        print("[stage] after_spi_close", flush=True)
 
 
 if __name__ == "__main__":

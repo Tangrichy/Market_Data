@@ -4,10 +4,20 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/functional.h>
 #include <pybind11/stl.h>
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstdlib>
+#include <dirent.h>
+#include <memory>
+#include <mutex>
 #include <string.h>
 #include <string>
+#include <thread>
 #include <vector>
 #include <functional>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include "GtjaMdUserApi.h"
 
@@ -85,6 +95,80 @@ public:
         [](const struct_& f) { return char_to_str(f.field_, sizeof(f.field_)); }, \
         [](struct_& f, const std::string& s) { strncpy(f.field_, s.c_str(), sizeof(f.field_)); })
 
+// ---------------------------------------------------------------------------
+// Release wakeup helpers
+//
+// GtjaMdUserApi::Release() sets an internal stop flag and then joins the
+// receive thread. That thread parks in a select()/pselect6() with no timeout,
+// so the flag is only observed after select returns - which never happens when
+// no market data arrives. Interrupting the thread makes select return EINTR,
+// the receive loop re-checks the flag, and the join completes.
+//
+// SIGURG is used because its default disposition is "ignore": a stray delivery
+// cannot terminate the process even if our handler is not installed.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr int kWakeSignal = SIGURG;
+constexpr int kDestructorReleaseTimeoutMs = 2000;
+constexpr int kWakeGraceMs = 1000;
+constexpr int kRewakeIntervalMs = 100;
+
+extern "C" void gtja_wake_signal_handler(int) {}
+
+class ScopedWakeSignalHandler {
+public:
+    ScopedWakeSignalHandler() {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = gtja_wake_signal_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;  // select()/pselect6() are never restarted anyway
+        installed_ = (sigaction(kWakeSignal, &sa, &old_) == 0);
+    }
+    ~ScopedWakeSignalHandler() {
+        if (installed_) sigaction(kWakeSignal, &old_, nullptr);
+    }
+    bool installed() const { return installed_; }
+
+private:
+    struct sigaction old_;
+    bool installed_ = false;
+};
+
+// The SDK never exposes its receive thread's pthread_t, but every thread of the
+// process is listed in /proc/self/task, so tgkill() can address it directly.
+// Threads that are not blocked in an interruptible syscall just run the no-op
+// handler, which is harmless.
+//
+// The caller must keep ScopedWakeSignalHandler installed across the delivery:
+// restoring the old disposition (SIG_DFL == ignore for SIGURG) before the
+// signal is delivered makes the kernel discard it, and select() never returns.
+int wake_blocked_threads() {
+    DIR* dir = opendir("/proc/self/task");
+    if (!dir) return 0;
+
+    const pid_t self = getpid();
+    const pid_t me = static_cast<pid_t>(syscall(SYS_gettid));
+    int sent = 0;
+    while (struct dirent* ent = readdir(dir)) {
+        if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
+        const pid_t tid = static_cast<pid_t>(std::atoi(ent->d_name));
+        if (tid == me) continue;
+        if (syscall(SYS_tgkill, self, tid, kWakeSignal) == 0) ++sent;
+    }
+    closedir(dir);
+    return sent;
+}
+
+long long elapsed_ms(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - t0)
+        .count();
+}
+
+}  // namespace
+
 // Wrapper class to manage lifetime safely. The official API hides the
 // destructor and requires calling Release() to destroy the object. We keep a
 // raw pointer and null it after Release() to avoid double-free when the Python
@@ -94,14 +178,29 @@ public:
     explicit GtjaMdApiWrapper(const std::string& log_path)
         : api_(GtjaMdUserApi::CreateMdUserApi(log_path.c_str())) {}
 
-    ~GtjaMdApiWrapper() { release(); }
+    ~GtjaMdApiWrapper() { release_impl(kDestructorReleaseTimeoutMs); }
 
+    // Blocking release, but without holding the GIL: the SDK callbacks that run
+    // on its receive thread need the GIL to reach Python, and holding it here
+    // while waiting for that very thread deadlocks the interpreter.
     void release() {
-        if (api_) {
-            api_->Release();
-            api_ = nullptr;
-        }
+        py::gil_scoped_release no_gil;
+        release_impl(0);
     }
+
+    // Bounded release. Returns elapsed milliseconds. If the SDK has not returned
+    // by `timeout_ms`, the receive thread is interrupted so its select() returns
+    // and the internal stop flag is observed. timeout_ms <= 0 blocks forever.
+    int ReleaseWithTimeout(int timeout_ms) {
+        py::gil_scoped_release no_gil;
+        return static_cast<int>(release_impl(timeout_ms));
+    }
+
+    int LastReleaseWakeups() const { return last_wakeups_.load(); }
+
+    // True if the SDK never returned and the object was abandoned (leaked) so
+    // that the caller could continue instead of blocking forever.
+    bool LastReleaseAbandoned() const { return abandoned_.load(); }
 
     void RegisterSpi(PySpi* spi) {
         if (!api_) throw std::runtime_error("API already released");
@@ -181,7 +280,77 @@ public:
     }
 
 private:
+    // Whoever takes the pointer owns the release; a second caller gets nullptr
+    // and returns immediately instead of releasing the same object twice.
+    GtjaMdUserApi* take_api() {
+        std::lock_guard<std::mutex> lock(mu_);
+        GtjaMdUserApi* api = api_;
+        api_ = nullptr;
+        return api;
+    }
+
+    long long release_impl(int timeout_ms) {
+        GtjaMdUserApi* api = take_api();
+        if (!api) return 0;
+
+        const auto t0 = std::chrono::steady_clock::now();
+        if (timeout_ms <= 0) {
+            api->Release();
+            return elapsed_ms(t0);
+        }
+
+        // The worker may outlive this scope if the SDK never returns, so the
+        // flag is shared rather than a stack local.
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        std::thread worker([api, done]() {
+            api->Release();
+            done->store(true, std::memory_order_release);
+        });
+
+        auto wait_until = [&](std::chrono::steady_clock::time_point deadline) {
+            while (!done->load(std::memory_order_acquire) &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        };
+
+        wait_until(t0 + std::chrono::milliseconds(timeout_ms));
+        if (!done->load(std::memory_order_acquire)) {
+            ScopedWakeSignalHandler handler;
+            const auto grace_end = std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(kWakeGraceMs);
+            int wakeups = 0;
+            while (!done->load(std::memory_order_acquire) &&
+                   std::chrono::steady_clock::now() < grace_end && handler.installed()) {
+                // A single shot can land while the thread is between selects,
+                // so keep interrupting until it unwinds.
+                wakeups += wake_blocked_threads();
+                wait_until(std::chrono::steady_clock::now() +
+                           std::chrono::milliseconds(kRewakeIntervalMs));
+            }
+            last_wakeups_.store(wakeups);
+            // Let any in-flight signal be delivered before the disposition is
+            // restored, otherwise it is silently dropped.
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        if (done->load(std::memory_order_acquire)) {
+            worker.join();
+            abandoned_.store(false);
+            return elapsed_ms(t0);
+        }
+
+        // Still stuck after the interrupt. Never hang the caller: detach and
+        // deliberately leak the SDK object so the process can still exit.
+        abandoned_.store(true);
+        worker.detach();
+        return elapsed_ms(t0);
+    }
+
+    std::mutex mu_;
     GtjaMdUserApi* api_;
+    std::atomic<int> last_wakeups_{0};
+    std::atomic<bool> abandoned_{false};
 };
 
 PYBIND11_MODULE(gtja_udp_api, m) {
@@ -395,6 +564,11 @@ PYBIND11_MODULE(gtja_udp_api, m) {
     py::class_<GtjaMdApiWrapper>(m, "GtjaMdUserApi")
         .def(py::init<const std::string&>(), py::arg("log_path") = "api.log")
         .def("Release", &GtjaMdApiWrapper::release)
+        .def("ReleaseWithTimeout", &GtjaMdApiWrapper::ReleaseWithTimeout,
+             py::arg("timeout_ms") = 5000,
+             "有界释放：超时后中断 SDK 收包线程的 select 等待，返回耗时毫秒数")
+        .def_property_readonly("LastReleaseWakeups", &GtjaMdApiWrapper::LastReleaseWakeups)
+        .def_property_readonly("LastReleaseAbandoned", &GtjaMdApiWrapper::LastReleaseAbandoned)
         .def("Init", &GtjaMdApiWrapper::Init)
         .def("Join", &GtjaMdApiWrapper::Join)
         .def("RegisterFront", &GtjaMdApiWrapper::RegisterFront)
