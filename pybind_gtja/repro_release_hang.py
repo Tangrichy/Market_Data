@@ -11,6 +11,7 @@ it never does.
 Modes:
     bounded   (default) call ReleaseWithTimeout() and check it returns
     blocking  call the plain Release() and watch it stay blocked
+    join      call Join() first and watch it stay blocked (it sets no flag)
     cycles    two create -> Init -> release cycles in one process
 
 Exit codes: 0 = resolved, 3 = still blocked, 2 = bad environment/argument.
@@ -71,6 +72,39 @@ def mode_blocking(log_path, watch_s):
     return 0
 
 
+def mode_join(log_path, timeout_ms, watch_s):
+    """Join() waits for the receive thread but never sets the stop flag.
+
+    If it returns here, the thread ended on its own; if it stays blocked, the
+    "Join before Release" order cannot reach the Release call at all.
+    """
+    api = make_api(log_path)
+    done = threading.Event()
+
+    def _join():
+        try:
+            api.Join()
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_join, daemon=True)
+    print("before_Join", flush=True)
+    thread.start()
+    joined = done.wait(watch_s)
+    if not joined:
+        print("after_Join: never   (still blocked after %ds)" % watch_s, flush=True)
+        # Clean up so this process can still exit; the stuck Join thread is
+        # left behind on purpose.
+        elapsed = api.ReleaseWithTimeout(timeout_ms)
+        print("release_after_failed_join %d ms, abandoned=%s"
+              % (elapsed, api.LastReleaseAbandoned), flush=True)
+        print("RESULT: BLOCKED - Join() before Release() does not return offline")
+        return 3
+    print("after_Join: returned", flush=True)
+    print("RESULT: PASS - Join() returned before Release()")
+    return 0
+
+
 def mode_cycles(log_path, timeout_ms, count):
     for i in range(1, count + 1):
         api = make_api("%s.%d" % (log_path, i))
@@ -87,7 +121,7 @@ def mode_cycles(log_path, timeout_ms, count):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--mode", choices=("bounded", "blocking", "cycles"),
+    ap.add_argument("--mode", choices=("bounded", "blocking", "join", "cycles"),
                     default="bounded")
     ap.add_argument("--log", default="/tmp/gtja_repro.log")
     ap.add_argument("--timeout-ms", type=int, default=3000)
@@ -100,6 +134,8 @@ def main():
         return mode_bounded(args.log, args.timeout_ms, 1)
     if args.mode == "blocking":
         return mode_blocking(args.log, args.watch)
+    if args.mode == "join":
+        return mode_join(args.log, args.timeout_ms, args.watch)
     return mode_cycles(args.log, args.timeout_ms, args.count)
 
 

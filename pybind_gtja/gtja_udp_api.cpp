@@ -222,8 +222,13 @@ public:
         return api_->Init();
     }
 
+    // Waits for the SDK receive thread. It does NOT set the stop flag (only
+    // Release() does), so it blocks until the thread is already unwinding.
+    // The GIL is released because the wait can be arbitrarily long: holding it
+    // freezes every Python thread, including the one that has to stop the SDK.
     int Join() {
         if (!api_) throw std::runtime_error("API already released");
+        py::gil_scoped_release no_gil;
         return api_->Join();
     }
 

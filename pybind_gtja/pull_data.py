@@ -104,6 +104,16 @@ def get_config():
                         default=int(os.getenv("GTJA_RELEASE_TIMEOUT", "5000")),
                         help="Release 的有界等待（毫秒）：超时后中断 SDK 收包线程的 select 等待；"
                              "<=0 表示沿用原始的无限等待")
+    parser.add_argument("--shutdown", choices=("vendor", "worker", "concurrent", "legacy"),
+                        default=os.getenv("GTJA_SHUTDOWN", "vendor"),
+                        help="停止顺序：vendor=独立线程退订→主线程Join→Release（厂商建议字面顺序）；"
+                             "worker=独立线程内退订+Release、主线程Join等待；"
+                             "concurrent=独立线程退订并立即 Release；"
+                             "legacy=主线程退订→等待0.5s→Release（原始演示顺序）")
+    parser.add_argument("--join-timeout", type=int,
+                        default=int(os.getenv("GTJA_JOIN_TIMEOUT", "5000")),
+                        help="vendor 顺序中 Join 的有界等待（毫秒），超时后转用有界 Release 收尾；"
+                             "<=0 表示无限等待（用于复现原生阻塞）")
     return parser.parse_args()
 
 
@@ -332,6 +342,119 @@ class DataSpi(gtja_udp_api.PySpi):
 
 
 # ---------------------------------------------------------------------------
+# 停止顺序
+#
+# SDK 的停止标志只有 Release() 会写；收包线程在循环开头检查该标志，因此它
+# 必须先从一个无超时的 select() 返回才能观察到停止。Join() 本身不设标志，
+# 只是等待收包线程结束，所以 Join 能否返回取决于当时是否有报文/信号唤醒。
+#
+# 本工具提供三种顺序，均以有界调用收尾，保证进程总能退出：
+#   vendor      独立线程发退订 → 主线程 Join → Release（厂商反馈建议）
+#   concurrent  独立线程发退订 → 立即 Release（不为退订应答留等待窗口）
+#   legacy      主线程发退订 → 等待 0.5s → Release（Issue.md 描述的演示顺序）
+# ---------------------------------------------------------------------------
+def _release(api, cfg, tick_count: int):
+    print(f"[stage] before_Release ticks={tick_count}", flush=True)
+    timeout_ms = cfg.release_timeout
+    if timeout_ms > 0 and hasattr(api, "ReleaseWithTimeout"):
+        elapsed = api.ReleaseWithTimeout(timeout_ms)
+        print(f"[stage] after_Release elapsed_ms={elapsed} "
+              f"wakeups={api.LastReleaseWakeups} abandoned={api.LastReleaseAbandoned}",
+              flush=True)
+        return not api.LastReleaseAbandoned
+    if not hasattr(api, "ReleaseWithTimeout"):
+        print("警告: 当前扩展不支持 ReleaseWithTimeout（可能是旧版本），"
+              "Release 可能不返回；请按 README 重新编译扩展。", flush=True)
+    api.Release()
+    print("[stage] after_Release", flush=True)
+    return True
+
+
+def _join_with_timeout(api, timeout_ms: int) -> bool:
+    """在独立线程里调用 Join()，最多等待 timeout_ms；返回 Join 是否已返回。
+
+    Join 不会写停止标志，所以除非收包线程已经结束，它不会返回。超时后这个
+    守护线程会一直等在 pthread_join 里，随后的 Release 会另设标志并再次
+    Join 同一个线程对象，两条等待在收包线程退出时一起返回。
+    """
+    done = threading.Event()
+
+    def _join():
+        try:
+            api.Join()
+        except Exception as exc:  # 记录后继续，不改变后续 Release 的行为
+            print(f"Join 异常: {exc}", flush=True)
+        finally:
+            done.set()
+
+    threading.Thread(target=_join, name="sdk-join", daemon=True).start()
+    return done.wait(timeout_ms / 1000.0) if timeout_ms > 0 else (api.Join() is not None)
+
+
+def _unsub_in_thread(send_unsub, symbols: List[str]):
+    print("[stage] before_ReqUnSubMarketData", flush=True)
+    thread = threading.Thread(target=send_unsub, args=(list(symbols),),
+                              name="unsub", daemon=True)
+    thread.start()
+    print(f"[stage] after_ReqUnSubMarketData (thread started, alive={thread.is_alive()})",
+          flush=True)
+    return thread
+
+
+def shutdown(cfg, api, symbols, supports_sub: bool, tick_count: int, send_unsub) -> None:
+    order = cfg.shutdown
+    print(f"[stage] shutdown_order={order}", flush=True)
+    can_unsub = bool(symbols) and supports_sub
+
+    if order == "vendor":
+        if can_unsub:
+            unsub_thread = _unsub_in_thread(send_unsub, symbols)
+        else:
+            unsub_thread = None
+        print(f"[stage] before_Join timeout_ms={cfg.join_timeout}", flush=True)
+        joined = _join_with_timeout(api, cfg.join_timeout)
+        if joined:
+            print("[stage] after_Join ok", flush=True)
+        else:
+            print(f"[stage] after_Join TIMEOUT after {cfg.join_timeout}ms "
+                  f"(unsub_alive={unsub_thread.is_alive() if unsub_thread else None})", flush=True)
+        _release(api, cfg, tick_count)
+        return
+
+    if order == "concurrent":
+        if can_unsub:
+            _unsub_in_thread(send_unsub, symbols)
+        _release(api, cfg, tick_count)
+        return
+
+    if order == "worker":
+        # 另一种读法：退订和 Release 都在工作线程里背靠背执行，主线程只负责
+        # Join 等待 SDK 收包线程结束。
+        def _worker():
+            if can_unsub:
+                send_unsub(list(symbols))
+            _release(api, cfg, tick_count)
+
+        worker = threading.Thread(target=_worker, name="shutdown", daemon=True)
+        print("[stage] before_shutdown_worker", flush=True)
+        worker.start()
+        print(f"[stage] before_Join timeout_ms={cfg.join_timeout}", flush=True)
+        if _join_with_timeout(api, cfg.join_timeout):
+            print("[stage] after_Join ok", flush=True)
+        else:
+            print(f"[stage] after_Join TIMEOUT after {cfg.join_timeout}ms", flush=True)
+        return
+
+    # legacy：主线程退订并等待 0.5 秒后再 Release
+    if can_unsub:
+        print("[stage] before_ReqUnSubMarketData", flush=True)
+        send_unsub(list(symbols))
+        print("[stage] after_ReqUnSubMarketData", flush=True)
+        time.sleep(0.5)
+    _release(api, cfg, tick_count)
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 def main():
@@ -490,28 +613,11 @@ def main():
         print(f"\n用户中断。共收到 {tick_count} 条 tick。")
     finally:
         stop_event.set()
-        if subscribed_symbols and supports_sub:
-            print("[stage] before_ReqUnSubMarketData", flush=True)
-            _send_unsub(list(subscribed_symbols))
-            print("[stage] after_ReqUnSubMarketData", flush=True)
-            time.sleep(0.5)
-
-        # The SDK's Release() joins a receive thread that is parked in an
-        # untimed select(), so it never returns while no data is arriving.
-        # ReleaseWithTimeout() interrupts that wait and returns either way.
-        print(f"[stage] before_Release ticks={tick_count}", flush=True)
-        if cfg.release_timeout > 0 and hasattr(api, "ReleaseWithTimeout"):
-            elapsed = api.ReleaseWithTimeout(cfg.release_timeout)
-            print(f"[stage] after_Release elapsed_ms={elapsed} "
-                  f"wakeups={api.LastReleaseWakeups} abandoned={api.LastReleaseAbandoned}",
-                  flush=True)
-        else:
-            if not hasattr(api, "ReleaseWithTimeout"):
-                print("警告: 当前扩展不支持 ReleaseWithTimeout（可能是旧版本），"
-                      "Release 可能不返回；请按 README 重新编译扩展。", flush=True)
-            api.Release()
-            print("[stage] after_Release", flush=True)
-
+        # The SDK's Release() joins a receive thread parked in an untimed
+        # select(), so it only returns once that select() returns. The chosen
+        # shutdown order decides what is expected to wake it; every path is
+        # bounded so the process still exits.
+        shutdown(cfg, api, subscribed_symbols, supports_sub, tick_count, _send_unsub)
         spi.close()
         print("[stage] after_spi_close", flush=True)
 
