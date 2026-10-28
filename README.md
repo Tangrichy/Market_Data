@@ -241,6 +241,7 @@ python verify_release.py --mode live \
 2. 析构路径先释放 GIL 再 `Release()`：`Release()` 要等 SDK 收包线程，而该线程投递 Python 回调需要 GIL，持 GIL 等待会自锁。
 3. 释放后再调用其它接口抛 `RuntimeError: API already released`，不再出现空指针或重复释放。
 4. `RegisterSpi` 用 `keep_alive<1, 2>` 把 SPI 钉在 API 对象的生命周期上，避免 Python 侧回收后 SDK 回调到已释放对象。
+5. `Release()` 与在途调用互斥：每个 SDK 调用持有一个调用令牌，释放开始后的新调用立即抛 `RuntimeError`，已在执行的调用先完成后才进入 SDK 的 `Release()`。这样既不会出现“取到裸指针后对象被释放”，也不会因为持锁等待收包线程回调而自锁。
 
 ---
 

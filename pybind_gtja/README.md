@@ -175,6 +175,17 @@ proxychains4 -q -f /etc/proxychains4.conf /opt/conda/envs/py39/bin/python -u pul
 
 2026-10-28 实测：上交所 `10011425`（50ETF 期权）8 秒 17 条、深交所 `90007411`（创业板ETF 期权）8 秒 204 条，订阅返回 0，`last_price` / 五档盘口 / `open_interest`（持仓量）均有值，CSV 正常落盘。注意 `dyn_ref_price` / `vir_match` / `iopv` 三列在所有已测合约（股票、ETF、沪深期权）上均为空，原因见根目录 README 的 SecurityExtraInfo 一节。
 
+## 登录时序
+
+头文件 `GtjaMdUserApi.h` 的注释写的是“`ReqUserLogin` 需在 `Init` 之前调用，`Init` 之后调用无效”，但实测 V3.7.1.1 与此不符：
+
+| 调用时机 | 实测结果 |
+|---|---|
+| `RegisterFront` 后、`Init` 前 | 返回 `-2`（`_rc_not_connected`，尚未连接）；连接建立后也不会补发登录，`OnRspUserLogin` 不触发 |
+| `OnFrontConnected` 回调中（本绑定与 SDK 自带 `demo/recvTest.cpp` 的做法） | 登录成功，回包 `ProtocolVersion` 为 7，订阅、收数正常 |
+
+因此本绑定沿用回调内登录，不要按头文件注释改成 `Init` 前调用。该差异仍建议由厂商确认，但在 V3.7.1.1 上当前写法是唯一可用的时序。
+
 ## 注意事项
 
 1. SDK 保持在仓库根目录的 `../udpapi_new` 即可，**不需要复制到本目录**。`setup.py` 通过 `UDPAPI_ROOT` 定位 SDK 根目录，并设置 `rpath`：
@@ -190,9 +201,11 @@ import gtja_udp_api
 api = gtja_udp_api.GtjaMdUserApi("api.log")
 ```
 
-释放时调用 `api.Release()`，或让对象自然析构即可。`Release()` 幂等且线程安全（并发调用时只有一个真正释放，其余等待后直接返回）；释放后再调用其它接口会抛 `RuntimeError: API already released`。`RegisterSpi` 传入的 SPI 会随 API 对象一起保持存活，不需要自己在 Python 侧另存引用。
+释放时调用 `api.Release()`，或让对象自然析构即可。`Release()` 幂等且线程安全：并发调用时只有一个真正释放，其余等待后直接返回；**释放开始后的新调用立即抛 `RuntimeError: API already released`，而释放开始前已经在执行的 SDK 调用会先完成**——`Release()` 等这些在途调用结束才进入 SDK，不会出现“取到指针后对象被释放”。`RegisterSpi` 传入的 SPI 会随 API 对象一起保持存活，不需要自己在 Python 侧另存引用。
 
 > 不要在 SPI 回调里调用 `Release()`：回调运行在 SDK 的收包线程上，而 `Release()` 要等这个线程退出，两边会互相等待。请在主线程或独立的清理线程里释放。
+
+> 也不要在 `Join()` 未返回时调用 `Release()`。V3.7.1.1 的 `Join()` 只等待收包线程结束、本身不写停止标志，而收包线程只有 `Release()` 才会停止；两者从不同线程先后调用会互相等待。正常退出请直接调用 `Release()`，不要先 `Join()`。
 2. 运行时应能通过 `rpath` 自动找到动态库；如仍报找不到库，可手动设置：
    ```bash
    export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1:$LD_LIBRARY_PATH

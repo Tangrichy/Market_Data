@@ -91,10 +91,16 @@ public:
         [](struct_& f, const std::string& s) { strncpy(f.field_, s.c_str(), sizeof(f.field_)); })
 
 // Wrapper class to manage lifetime safely. The official API hides the
-// destructor and requires calling Release() to destroy the object. We keep a
-// raw pointer, null it before Release() and serialise the call: that way a
-// concurrent second Release() cannot re-enter the SDK on a destroyed object,
-// and no new request slips in while the SDK is tearing its threads down.
+// destructor and requires calling Release() to destroy the object. Every SDK
+// call runs under a CallToken that pins the object for the duration:
+//
+//   * Release() rejects new calls from the moment it starts, then waits for
+//     the tokens already handed out. No request can therefore overlap the
+//     SDK teardown, and a concurrent second Release() cannot re-enter the
+//     SDK on a destroyed object.
+//   * The mutex is never held across an SDK call. The SDK's receive thread
+//     may enter Python and call back into this object; holding the lock
+//     across Release() (which joins that thread) would deadlock.
 class GtjaMdApiWrapper {
 public:
     explicit GtjaMdApiWrapper(const std::string& log_path)
@@ -119,17 +125,24 @@ public:
     }
 
     // Idempotent and safe to call from several threads at once: the first
-    // caller releases the SDK, the others wait for it and then return as
-    // no-ops.
+    // caller releases the SDK after draining in-flight calls, the others wait
+    // for it and then return as no-ops.
     void release() {
         GtjaMdUserApi* api = nullptr;
         {
             std::unique_lock<std::mutex> lock(mu_);
-            release_done_.wait(lock, [this] { return !releasing_; });
+            if (releasing_) {
+                // A second caller must not enter the SDK again: wait for the
+                // first release to finish, then observe api_ == nullptr.
+                release_done_.wait(lock, [this] { return !releasing_; });
+                return;
+            }
             if (!api_) return;
-            api = api_;
-            api_ = nullptr;
             releasing_ = true;
+            api = api_;
+            api_ = nullptr;  // further calls fail fast instead of entering the SDK
+            // Let calls that were already handed a token finish first.
+            idle_.wait(lock, [this] { return active_calls_ == 0; });
         }
         std::exception_ptr error;
         try {
@@ -212,19 +225,50 @@ public:
     }
 
 private:
-    // Never hand out api_ without the lock, and never hold the lock across an
-    // SDK call: Release() waits for the SDK's receive thread, which may itself
-    // be inside a Python callback calling back into this object.
-    GtjaMdUserApi* api_alive() {
+    // Held for the duration of one SDK call. The owning wrapper cannot start
+    // Release() while a token is alive, which is what makes handing out the
+    // raw api_ pointer safe. Not copyable; movable only so it can be returned.
+    class CallToken {
+    public:
+        CallToken(GtjaMdApiWrapper* owner, GtjaMdUserApi* api) : owner_(owner), api_(api) {}
+        CallToken(CallToken&& other) noexcept : owner_(other.owner_), api_(other.api_) {
+            other.owner_ = nullptr;
+        }
+        CallToken(const CallToken&) = delete;
+        CallToken& operator=(const CallToken&) = delete;
+        CallToken& operator=(CallToken&&) = delete;
+        ~CallToken() {
+            if (owner_) owner_->end_call();
+        }
+        GtjaMdUserApi* operator->() const { return api_; }
+
+    private:
+        GtjaMdApiWrapper* owner_;
+        GtjaMdUserApi* api_;
+    };
+
+    // Never hold the lock across the SDK call, and never hand the pointer out
+    // without a token: the token is what stops Release() from tearing the
+    // object down mid-request.
+    CallToken api_alive() {
         std::lock_guard<std::mutex> lock(mu_);
         if (!api_) throw std::runtime_error("API already released");
-        return api_;
+        ++active_calls_;
+        return CallToken(this, api_);
+    }
+
+    void end_call() {
+        std::lock_guard<std::mutex> lock(mu_);
+        --active_calls_;
+        if (active_calls_ == 0) idle_.notify_all();
     }
 
     std::mutex mu_;
     std::condition_variable release_done_;
+    std::condition_variable idle_;
     GtjaMdUserApi* api_;
     bool releasing_ = false;
+    int active_calls_ = 0;
 };
 
 PYBIND11_MODULE(gtja_udp_api, m) {
