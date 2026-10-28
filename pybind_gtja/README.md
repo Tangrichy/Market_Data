@@ -11,6 +11,7 @@
 | `gtja_udp_api.cpp` | pybind11 C++ 绑定源码 |
 | `setup.py` | 编译脚本 |
 | `pull_data.py` | Python 拉取数据示例 |
+| `verify_release.py` | `Release()` 退出行为复验（offline/silent/cycles/concurrent 免账号，live 需前置与账号） |
 
 ## 环境要求
 
@@ -50,7 +51,7 @@ rm -rf build
 /opt/conda/envs/rqsdk/bin/python -c "import gtja_udp_api; print('OK')"
 ```
 
-实测（2026-10-21，SSE 21002）：20 秒收到 95 条 tick，CSV 落盘正常；`api.Release()` 在 proxychains 下不返回，外层需套 `timeout`（返回 124 属正常）。
+实测（2026-10-28，SSE 21002）：连接登录、订阅、收数、CSV 落盘正常，`api.Release()` 在 proxychains 下 3–70 ms 返回，进程自行退出、退出码 0。2026-10-21 在旧 V3.7.0.6 上曾出现 `Release()` 不返回，该问题已随 V3.7.1.1 消失（见根目录 README「验证 Release」）。
 
 其他版本以 3.12 为例：
 
@@ -94,7 +95,7 @@ proxychains4 -q -f /etc/proxychains4.conf \
   --output sse_ticks.csv --duration 60
 ```
 
-> `-u` 用于关闭 stdout 缓冲；`api.Release()` 在 proxychains 下可能不返回，建议外层再套 `timeout`。
+> `-u` 用于关闭 stdout 缓冲。`api.Release()` 在 V3.7.1.1 上可正常返回（proxychains 下实测 3–70 ms），外层 `timeout` 只作兜底，不再是被杀掉的常态。
 
 ### 上交所 / 深交所
 
@@ -189,7 +190,9 @@ import gtja_udp_api
 api = gtja_udp_api.GtjaMdUserApi("api.log")
 ```
 
-释放时调用 `api.Release()`，或让对象自然析构即可。
+释放时调用 `api.Release()`，或让对象自然析构即可。`Release()` 幂等且线程安全（并发调用时只有一个真正释放，其余等待后直接返回）；释放后再调用其它接口会抛 `RuntimeError: API already released`。`RegisterSpi` 传入的 SPI 会随 API 对象一起保持存活，不需要自己在 Python 侧另存引用。
+
+> 不要在 SPI 回调里调用 `Release()`：回调运行在 SDK 的收包线程上，而 `Release()` 要等这个线程退出，两边会互相等待。请在主线程或独立的清理线程里释放。
 2. 运行时应能通过 `rpath` 自动找到动态库；如仍报找不到库，可手动设置：
    ```bash
    export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1:$LD_LIBRARY_PATH

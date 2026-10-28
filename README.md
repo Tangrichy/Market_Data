@@ -210,13 +210,13 @@ readelf -d gtja_udp_api*.so | grep -Ei 'rpath|runpath'   # 应指向本仓库的
 
 ### 验证 Release（关机行为）
 
-V3.7.0.6 的问题：收包线程停在无超时的 `pselect6`，`Release()` 写完停止标志后 `pthread_join` 一直等，进程无法正常退出。V3.7.1.1 已修复。用 [`pybind_gtja/verify_release.py`](pybind_gtja/verify_release.py) 可复验，其中前三个场景**不需要账号、也不需要交易时段**：
+V3.7.0.6 的问题：收包线程停在无超时的 `pselect6`，`Release()` 写完停止标志后 `pthread_join` 一直等，进程无法正常退出。V3.7.1.1 已修复。用 [`pybind_gtja/verify_release.py`](pybind_gtja/verify_release.py) 可复验，其中前四个场景**不需要账号、也不需要交易时段**：
 
 ```bash
 cd pybind_gtja
 source /opt/conda/etc/profile.d/conda.sh && conda activate py39
 
-python verify_release.py                     # offline + silent + cycles
+python verify_release.py                     # offline + silent + cycles + concurrent
 python verify_release.py --mode live \
     --front tcp://183.193.54.200:21002 --user <账号> --password <密码> \
     --symbols 600000,688027 --exchange sse   # 完整链路，需交易时段
@@ -229,10 +229,18 @@ python verify_release.py --mode live \
 | 无前置、不登录 | 25 s 未返回（`exit=124`） | 42 ms |
 | 已连接、服务端静默不发数据 | 25 s 未返回 | 3 ms |
 | 连续 5 轮创建/初始化/释放 | 第 1 轮即阻塞 | 5/5 通过，无线程残留 |
+| 4 个线程同时调用 `Release` | 旧包装层：第二个调用永久阻塞 | 4/4 返回（0.1–95 ms），无线程残留 |
 | SSE `183.193.54.200:21002`，600000/688027 | 阻塞 | 18 tick，**69 ms**，退出码 0 |
 | SZSE `183.63.193.58:42116`，000001/300750 | 阻塞 | 21 tick，**9.8 ms**，退出码 0 |
 
 判定依据：SDK 日志出现 `Recv thread stopped.` → `Released.`，且线程数回落到 1。
+
+包装层另有四处加固（2026-10-28，均在 `gtja_udp_api.cpp` 内，与 SDK 版本无关）：
+
+1. `Release()` 幂等且线程安全：并发调用时只有一个线程真正进 SDK，其余等待后直接返回；此前旧包装会让第二个线程在已销毁的对象上再次 `Release`，实测永久阻塞（`exit=124`）。
+2. 析构路径先释放 GIL 再 `Release()`：`Release()` 要等 SDK 收包线程，而该线程投递 Python 回调需要 GIL，持 GIL 等待会自锁。
+3. 释放后再调用其它接口抛 `RuntimeError: API already released`，不再出现空指针或重复释放。
+4. `RegisterSpi` 用 `keep_alive<1, 2>` 把 SPI 钉在 API 对象的生命周期上，避免 Python 侧回收后 SDK 回调到已释放对象。
 
 ---
 

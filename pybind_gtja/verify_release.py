@@ -6,16 +6,17 @@
 Release() 写停止标志后 pthread_join 一直等下去。V3.7.1.1 实测会在
 Release 时主动唤醒接收线程并打印 "Recv thread stopped."。
 
-三种不需要账号/行情的场景：
-    offline  不注册前置、不登录，Init 后直接 Release
-    silent   本机起一个只 accept、不发数据的 TCP 服务端，连上后再 Release
-    cycles   连续创建/初始化/释放 N 次，检查线程与句柄不残留
+四种不需要账号/行情的场景：
+    offline     不注册前置、不登录，Init 后直接 Release
+    silent      本机起一个只 accept、不发数据的 TCP 服务端，连上后再 Release
+    cycles      连续创建/初始化/释放 N 次，检查线程与句柄不残留
+    concurrent  多个线程同时调用 Release，其余调用应等待后正常返回（不能重复释放）
 
 外加一个需要交易时段和账号的场景：
     live     真实前置，连接登录、收数、退订后 Release
 
 用法：
-    python verify_release.py                 # 依次跑 offline/silent/cycles
+    python verify_release.py                 # 依次跑 offline/silent/cycles/concurrent
     python verify_release.py --mode silent
     python verify_release.py --mode live --front tcp://... --user ... --password ...
     python verify_release.py --stop-at 5     # Release 本身不设超时，只限整体时间
@@ -138,6 +139,45 @@ def run_cycles(log_path, limit_s, count):
     return ok
 
 
+def run_concurrent(log_path, limit_s, callers):
+    api, _ = new_api(log_path)
+    rc = api.Init()
+    print("concurrent Init rc=%s threads=%d" % (rc, nthreads()), flush=True)
+    if rc != 0:
+        return False
+    time.sleep(0.5)
+
+    started = threading.Barrier(callers)
+    results = []
+
+    def call_release(i):
+        started.wait()
+        t0 = time.time()
+        try:
+            api.Release()
+            results.append((i, True, (time.time() - t0) * 1000))
+        except BaseException as exc:  # noqa: BLE001 - report, do not cover up
+            results.append((i, False, repr(exc)))
+
+    ths = [threading.Thread(target=call_release, args=(i,), daemon=True)
+           for i in range(callers)]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(limit_s)
+
+    stuck = [i for i, th in enumerate(ths) if th.is_alive()]
+    failed = sorted(results)
+    for i, ok, info in failed:
+        if ok:
+            print("concurrent caller %d returned in %.1f ms" % (i, info), flush=True)
+        else:
+            print("concurrent caller %d failed: %s" % (i, info), flush=True)
+    print("concurrent %d/%d returned, stuck=%s threads=%d"
+          % (len(results), callers, stuck, nthreads()), flush=True)
+    return not stuck and len(results) == callers and all(ok for _, ok, _ in results)
+
+
 def run_live(log_path, limit_s, front, user, password, symbols, exchange, duration):
     api, spi = new_api(log_path)
     connected = threading.Event()
@@ -211,10 +251,11 @@ def run_live(log_path, limit_s, front, user, password, symbols, exchange, durati
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--mode", default="all",
-                   choices=["all", "offline", "silent", "cycles", "live"])
+                   choices=["all", "offline", "silent", "cycles", "concurrent", "live"])
     p.add_argument("--log", default="/tmp/gtja_verify_api.log")
     p.add_argument("--limit", type=float, default=20.0, help="每个场景等待 Release 的上限（秒）")
     p.add_argument("--cycles", type=int, default=5)
+    p.add_argument("--callers", type=int, default=3, help="concurrent 场景同时调用 Release 的线程数")
     p.add_argument("--front", default=os.getenv("GTJA_FRONT", ""))
     p.add_argument("--user", default=os.getenv("GTJA_USER", ""))
     p.add_argument("--password", default=os.getenv("GTJA_PASSWORD", ""))
@@ -230,6 +271,8 @@ def main():
         results["silent"] = run_silent(cfg.log, cfg.limit)
     if cfg.mode in ("all", "cycles"):
         results["cycles"] = run_cycles(cfg.log, cfg.limit, cfg.cycles)
+    if cfg.mode in ("all", "concurrent"):
+        results["concurrent"] = run_concurrent(cfg.log, cfg.limit, cfg.callers)
     if cfg.mode == "live" or (cfg.mode == "all" and cfg.front):
         if not (cfg.front and cfg.user):
             print("live 需要 --front 和 --user")

@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <mutex>
+#include <condition_variable>
+#include <exception>
 
 #include "GtjaMdUserApi.h"
 
@@ -89,72 +92,100 @@ public:
 
 // Wrapper class to manage lifetime safely. The official API hides the
 // destructor and requires calling Release() to destroy the object. We keep a
-// raw pointer and null it after Release() to avoid double-free when the Python
-// wrapper is garbage collected.
+// raw pointer, null it before Release() and serialise the call: that way a
+// concurrent second Release() cannot re-enter the SDK on a destroyed object,
+// and no new request slips in while the SDK is tearing its threads down.
 class GtjaMdApiWrapper {
 public:
     explicit GtjaMdApiWrapper(const std::string& log_path)
         : api_(GtjaMdUserApi::CreateMdUserApi(log_path.c_str())) {}
 
-    ~GtjaMdApiWrapper() { release(); }
-
-    void release() {
-        if (api_) {
-            api_->Release();
-            api_ = nullptr;
+    // Release blocks until the SDK has joined its receive thread, and that
+    // thread needs the GIL to deliver callbacks into Python, so drop it here
+    // too (PyGILState_Check covers interpreter finalisation, where no thread
+    // state is available).
+    ~GtjaMdApiWrapper() {
+        try {
+            if (PyGILState_Check()) {
+                py::gil_scoped_release no_gil;
+                release();
+            } else {
+                release();
+            }
+        } catch (...) {
+            // A throwing destructor would call std::terminate; the SDK is gone
+            // either way, so there is nothing left to report.
         }
+    }
+
+    // Idempotent and safe to call from several threads at once: the first
+    // caller releases the SDK, the others wait for it and then return as
+    // no-ops.
+    void release() {
+        GtjaMdUserApi* api = nullptr;
+        {
+            std::unique_lock<std::mutex> lock(mu_);
+            release_done_.wait(lock, [this] { return !releasing_; });
+            if (!api_) return;
+            api = api_;
+            api_ = nullptr;
+            releasing_ = true;
+        }
+        std::exception_ptr error;
+        try {
+            api->Release();
+        } catch (...) {
+            error = std::current_exception();
+        }
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            releasing_ = false;
+        }
+        release_done_.notify_all();
+        if (error) std::rethrow_exception(error);
     }
 
     void RegisterSpi(PySpi* spi) {
-        if (!api_) throw std::runtime_error("API already released");
-        api_->RegisterSpi(spi);
+        if (!spi) throw std::runtime_error("SPI must not be null");
+        api_alive()->RegisterSpi(spi);
     }
 
     int RegisterFront(const std::string& addr) {
-        if (!api_) throw std::runtime_error("API already released");
-        return api_->RegisterFront(addr.c_str());
+        return api_alive()->RegisterFront(addr.c_str());
     }
 
     void SetConfig(const std::string& key, const std::string& val) {
-        if (!api_) throw std::runtime_error("API already released");
-        api_->SetConfig(key.c_str(), val.c_str());
+        api_alive()->SetConfig(key.c_str(), val.c_str());
     }
 
     int Init() {
-        if (!api_) throw std::runtime_error("API already released");
-        return api_->Init();
+        return api_alive()->Init();
     }
 
     int Join() {
-        if (!api_) throw std::runtime_error("API already released");
-        return api_->Join();
+        return api_alive()->Join();
     }
 
     int ReqUserLogin(const GtjaMdReqUserLoginField& req, int request_id, int conn_id) {
-        if (!api_) throw std::runtime_error("API already released");
-        return api_->ReqUserLogin(&req, request_id, conn_id);
+        return api_alive()->ReqUserLogin(&req, request_id, conn_id);
     }
 
     int ReqUserLogin(const std::string& user, const std::string& pwd, int request_id, int conn_id) {
-        if (!api_) throw std::runtime_error("API already released");
         GtjaMdReqUserLoginField req{};
         strncpy(req.UserID, user.c_str(), sizeof(req.UserID) - 1);
         strncpy(req.Password, pwd.c_str(), sizeof(req.Password) - 1);
-        return api_->ReqUserLogin(&req, request_id, conn_id);
+        return api_alive()->ReqUserLogin(&req, request_id, conn_id);
     }
 
     bool QueryFunction(uint64_t function, int conn_id) {
-        if (!api_) throw std::runtime_error("API already released");
-        return api_->QueryFunction(function, conn_id);
+        return api_alive()->QueryFunction(function, conn_id);
     }
 
     int ReqSubMarketData(const std::vector<GtjaMdSpecificInstrumentField>& insts, int request_id, int conn_id) {
-        if (!api_) throw std::runtime_error("API already released");
-        return api_->ReqSubMarketData(insts.data(), (uint32_t)insts.size(), request_id, conn_id);
+        return api_alive()->ReqSubMarketData(insts.data(), (uint32_t)insts.size(), request_id, conn_id);
     }
 
     int ReqSubMarketData(const std::vector<std::string>& symbols, int request_id, int conn_id) {
-        if (!api_) throw std::runtime_error("API already released");
         std::vector<GtjaMdSpecificInstrumentField> insts(symbols.size());
         for (size_t i = 0; i < symbols.size(); ++i) {
             memset(&insts[i], 0, sizeof(insts[i]));
@@ -162,16 +193,14 @@ public:
             insts[i].ProductType = _pt_unset;
             strncpy(insts[i].InstrumentID, symbols[i].c_str(), sizeof(insts[i].InstrumentID) - 1);
         }
-        return api_->ReqSubMarketData(insts.data(), (uint32_t)insts.size(), request_id, conn_id);
+        return api_alive()->ReqSubMarketData(insts.data(), (uint32_t)insts.size(), request_id, conn_id);
     }
 
     int ReqUnSubMarketData(const std::vector<GtjaMdSpecificInstrumentField>& insts, int request_id, int conn_id) {
-        if (!api_) throw std::runtime_error("API already released");
-        return api_->ReqUnSubMarketData(insts.data(), (uint32_t)insts.size(), request_id, conn_id);
+        return api_alive()->ReqUnSubMarketData(insts.data(), (uint32_t)insts.size(), request_id, conn_id);
     }
 
     int ReqUnSubMarketData(const std::vector<std::string>& symbols, int request_id, int conn_id) {
-        if (!api_) throw std::runtime_error("API already released");
         std::vector<GtjaMdSpecificInstrumentField> insts(symbols.size());
         for (size_t i = 0; i < symbols.size(); ++i) {
             memset(&insts[i], 0, sizeof(insts[i]));
@@ -179,11 +208,23 @@ public:
             insts[i].ProductType = _pt_unset;
             strncpy(insts[i].InstrumentID, symbols[i].c_str(), sizeof(insts[i].InstrumentID) - 1);
         }
-        return api_->ReqUnSubMarketData(insts.data(), (uint32_t)insts.size(), request_id, conn_id);
+        return api_alive()->ReqUnSubMarketData(insts.data(), (uint32_t)insts.size(), request_id, conn_id);
     }
 
 private:
+    // Never hand out api_ without the lock, and never hold the lock across an
+    // SDK call: Release() waits for the SDK's receive thread, which may itself
+    // be inside a Python callback calling back into this object.
+    GtjaMdUserApi* api_alive() {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!api_) throw std::runtime_error("API already released");
+        return api_;
+    }
+
+    std::mutex mu_;
+    std::condition_variable release_done_;
     GtjaMdUserApi* api_;
+    bool releasing_ = false;
 };
 
 PYBIND11_MODULE(gtja_udp_api, m) {
@@ -412,7 +453,10 @@ PYBIND11_MODULE(gtja_udp_api, m) {
         .def("Init", &GtjaMdApiWrapper::Init)
         .def("Join", &GtjaMdApiWrapper::Join, py::call_guard<py::gil_scoped_release>())
         .def("RegisterFront", &GtjaMdApiWrapper::RegisterFront)
-        .def("RegisterSpi", &GtjaMdApiWrapper::RegisterSpi)
+        // The SDK keeps the SPI pointer for the whole session, so pin the
+        // Python object to the API's lifetime: dropping the last Python
+        // reference would otherwise free it while callbacks still arrive.
+        .def("RegisterSpi", &GtjaMdApiWrapper::RegisterSpi, py::keep_alive<1, 2>())
         .def("SetConfig", &GtjaMdApiWrapper::SetConfig)
         .def("ReqUserLogin", static_cast<int (GtjaMdApiWrapper::*)(const GtjaMdReqUserLoginField&, int, int)>(
             &GtjaMdApiWrapper::ReqUserLogin))
