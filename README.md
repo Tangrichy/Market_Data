@@ -15,6 +15,10 @@
 - Linux x86_64，CTP 需要中文 locale（GBK/GB18030）
 - **使用国泰君安 UDP 行情前，必须先准备 `udpapi_new/` SDK**（C++ 头文件 + 动态库），见下文「行情 SDK 依赖」
 
+> **当前使用的 SDK：V3.7.1.1（build 20250624），`udpapi_new/Linux64/gcc9.3.1`。**
+> 相对旧的 V3.7.0.6，本版本 `Release()` 会主动唤醒收包线程，**不再出现"关机卡死、只能靠外部 `timeout` 杀掉"的现象**（实测 9.8–69 ms 返回，见「验证 Release」）。
+> 同时 `GtjaMdUserSpi::OnRtnDepthSnapshot` 多了一个 `const SecurityExtraInfo*` 参数，属于 **ABI 破坏**：旧扩展无法加载新库，必须重新编译。
+
 > 本机默认的 `python` 是 conda base 的 3.11，`pull_data.py` 需显式指定一个**已为其编译过扩展**的解释器（py39，或下文的 rqsdk/3.10）。
 
 ### 选择 Python 解释器
@@ -38,7 +42,7 @@ python -c "import sys; print(sys.version)"   # 应输出 3.9.x
 
 #### conda rqsdk 环境（Python 3.10，已实测）
 
-`rqsdk` 是 Python 3.10.20，与预置的 `cpython-39` 扩展不兼容，需要先为它单独编译一次（只需一次）：
+`rqsdk` 是 Python 3.10.20，与预置的 `cpython-39` 扩展不兼容，需要先为它单独编译一次（每个解释器只需一次；但**每次更换 SDK 版本后都要重编**，因为 V3.7.1.1 改过回调签名）：
 
 ```bash
 /opt/conda/envs/rqsdk/bin/pip install pybind11          # 该环境原本未安装
@@ -61,7 +65,9 @@ timeout 100 proxychains4 -q -f /etc/proxychains4.conf \
   --output sse_ticks.csv --duration 20
 ```
 
-> **实测（2026-10-21，SSE 21002）**：登录、订阅、历史快照回放与实时 tick 均正常，20 秒收到 95 条 tick，CSV 落盘正常。进程会在 `api.Release()` 处被 proxychains 挂住，因此外层要套 `timeout`；被 timeout 杀掉返回 124 属正常现象。
+> **实测（2026-10-21，SSE 21002）**：登录、订阅、历史快照回放与实时 tick 均正常，20 秒收到 95 条 tick，CSV 落盘正常。
+>
+> **2026-10-28 更新（SDK V3.7.1.1）**：此前"进程卡在 `api.Release()`、必须靠 `timeout` 杀掉"的现象已随新 SDK 消失，两条前置实测 Release 分别在 69 ms / 9.8 ms 返回、退出码 0。外层 `timeout` 仍建议保留作兜底，但它不再是被杀掉的常态。
 
 #### 新设备 / 其他 Python 版本（3.10 / 3.11 / 3.12）
 
@@ -158,7 +164,7 @@ UDPAPI_ROOT = os.getenv("GTJA_UDPAPI_ROOT") or os.path.join(os.path.dirname(ROOT
 # 即 /root/private_data/Market_Data/udpapi_new
 ```
 
-编译脚本会在 `Linux64/` 下依次查找 `gcc9.3.1` → `gcc8.3.1` → `gcc7.3.1` → `gcc4.8.5` → `gcc4.4.7`，使用第一个存在 `libGtjaMdUserApi.so` 的目录。SDK 放在别处时可用环境变量覆盖：
+编译脚本会在 `Linux64/` 下依次查找 `gcc9.3.1` → `gcc8.3.1` → `gcc7.3.1` → `gcc4.8.5` → `gcc4.4.7`，使用第一个存在 `libGtjaMdUserApi.so` 的目录。注意 V3.7.1.1 只提供 `gcc4.8.5/gcc7.3.1/gcc8.3.1/gcc9.3.1` 及三个 `_onload8`、`_onload9.2` 加速版，**没有 `gcc4.4.7`**（该目录只在旧的 `udpapi/` 里）。SDK 放在别处时可用环境变量覆盖：
 
 ```bash
 export GTJA_UDPAPI_ROOT=/path/to/udpapi_new           # SDK 根目录
@@ -191,7 +197,7 @@ libGtjaMdUserApi.so => /root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.
 export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1:$LD_LIBRARY_PATH
 ```
 
-> **换机器 / 换目录后必须重新编译。** 仓库里提交的 `gtja_udp_api.cpython-39-x86_64-linux-gnu.so` 在旧构建目录下编译，rpath 被写成了当时的绝对路径 `/root/private_data/trading/udpapi_new/Linux64/gcc9.3.1`。换到本仓库或其他机器后该目录并不存在，即使能导入扩展也会因找不到动态库而失败。重新编译会按当前仓库的实际路径重写 rpath。
+> **换机器 / 换目录后必须重新编译。** rpath 是**编译时的绝对路径**，无法随仓库搬迁。仓库里提交的 `gtja_udp_api.cpython-39-x86_64-linux-gnu.so` 是在 `/root/private_data/Market_Data` 下编译的，rpath 为 `/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1`；换到其他机器或目录后该路径并不存在，即使能导入扩展也会因找不到动态库而失败。重新编译会按当前仓库的实际路径重写 rpath。
 
 以下命令**从仓库根目录**（`Market_Data/`）执行：
 
@@ -201,6 +207,32 @@ cd pybind_gtja
 python setup.py build_ext --inplace
 readelf -d gtja_udp_api*.so | grep -Ei 'rpath|runpath'   # 应指向本仓库的 udpapi_new/Linux64/gcc9.3.1
 ```
+
+### 验证 Release（关机行为）
+
+V3.7.0.6 的问题：收包线程停在无超时的 `pselect6`，`Release()` 写完停止标志后 `pthread_join` 一直等，进程无法正常退出。V3.7.1.1 已修复。用 [`pybind_gtja/verify_release.py`](pybind_gtja/verify_release.py) 可复验，其中前三个场景**不需要账号、也不需要交易时段**：
+
+```bash
+cd pybind_gtja
+source /opt/conda/etc/profile.d/conda.sh && conda activate py39
+
+python verify_release.py                     # offline + silent + cycles
+python verify_release.py --mode live \
+    --front tcp://183.193.54.200:21002 --user <账号> --password <密码> \
+    --symbols 600000,688027 --exchange sse   # 完整链路，需交易时段
+```
+
+本机实测（2026-10-28，py39，经 proxychains 连真实前置）：
+
+| 场景 | 旧 V3.7.0.6 | 新 V3.7.1.1 |
+|---|---|---|
+| 无前置、不登录 | 25 s 未返回（`exit=124`） | 42 ms |
+| 已连接、服务端静默不发数据 | 25 s 未返回 | 3 ms |
+| 连续 5 轮创建/初始化/释放 | 第 1 轮即阻塞 | 5/5 通过，无线程残留 |
+| SSE `183.193.54.200:21002`，600000/688027 | 阻塞 | 18 tick，**69 ms**，退出码 0 |
+| SZSE `183.63.193.58:42116`，000001/300750 | 阻塞 | 21 tick，**9.8 ms**，退出码 0 |
+
+判定依据：SDK 日志出现 `Recv thread stopped.` → `Released.`，且线程数回落到 1。
 
 ---
 
@@ -262,7 +294,7 @@ python ctp_mdapi.py
 
 ## pybind_gtja/pull_data.py
 
-通过 pybind11 封装国泰君安官方 C++ 行情 API，**仅用于订阅沪深股票**（上交所/深交所），可将 tick 打印到控制台并写入 CSV。不支持期货、期权及黄金现货合约。
+通过 pybind11 封装国泰君安官方 C++ 行情 API，用于订阅**上交/深交所的股票与 ETF**，可将 tick 打印到控制台并写入 CSV。实测 600000、688027、000001、300750、510050、510300、512880、588000 均有行情；**不支持期货、期权及黄金现货合约**（期货订阅会被 ack 但收不到 tick）。
 
 ### 前置要求：安装 udpapi_new SDK
 
@@ -370,7 +402,9 @@ exit / quit / q      # 退出
 
 ### CSV 输出
 
-列依次为：`recv_time`、`conn_id`、`exchange`、`symbol`、`date`、`time`、`milli`、`last_price`、`volume`、`turnover`、`open_interest`，随后按 `--levels` 重复 `bid_price_n`、`bid_volume_n`、`ask_price_n`、`ask_volume_n`，最后为 `status`。
+列依次为：`recv_time`、`conn_id`、`exchange`、`symbol`、`date`、`time`、`milli`、`last_price`、`volume`、`turnover`、`open_interest`，随后按 `--levels` 重复 `bid_price_n`、`bid_volume_n`、`ask_price_n`、`ask_volume_n`，接着为 `status`，最后是 V3.7.1.1 新增的三列 `dyn_ref_price`、`vir_match`、`iopv`。
+
+> 这三列来自 `SecurityExtraInfo`，目前**实测恒为空**：两台前置（21002 / 42116）对股票和 510050/510300/512880/588000 等基金各 40+ 条 tick 均未携带该数据块。字段本身是通的（回调正常、其他字段无误），缺的是服务端下发，需向 GTJA 确认前置版本与行情源覆盖范围。下游若按固定列数解析，请注意这 3 列的存在。
 
 ---
 
@@ -380,7 +414,10 @@ exit / quit / q      # 退出
 - **CTP 连接超时** — 检查 `MARKET_DATA_SERVERS` 中的地址与端口、本机防火墙及网络连通性。
 - **`ModuleNotFoundError: No module named 'gtja_udp_api'`** — 九成是 Python 版本与扩展的 ABI 标签不一致（.so 文件名里的 `cpython-3xx`）。Python 3.11/3.12 会直接忽略 `cpython-39` 的 `.so`。`pull_data.py` 现在会打印已有的 `.so` 版本、当前解释器版本和两种解决办法；快速处理：要么切到匹配的解释器，要么在当前解释器下 `rm -rf build && python setup.py build_ext --inplace` 重编。
 - **`gtja_udp_api` 找不到 `libGtjaMdUserApi.so`** — 说明 `.so` 的 rpath 指向了不存在的旧路径（如 `/root/private_data/trading/udpapi`），在新环境里重新编译即可重写 rpath；或临时 `export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1:$LD_LIBRARY_PATH`。
-- **登录成功但无行情** — 检查股票代码与交易所是否匹配、是否处于交易时段；只能使用 6 位沪深股票代码，期货合约即使订阅成功也不会收到数据。
+- **登录成功但无行情** — 检查股票代码与交易所是否匹配、是否处于交易时段；只能使用 6 位沪深股票/ETF 代码，期货合约即使订阅成功也不会收到数据。
+- **换 SDK 版本后导入报错或收到乱码** — V3.7.1.1 对 `OnRtnDepthSnapshot` 做了 ABI 破坏性改动，**旧扩展不能配新库**（反之亦然）。必须用同一份 `udpapi_new` 头文件重新编译扩展；`python setup.py build_ext --inplace --force`。
+- **`Release()` 卡住不返回** — 只发生在旧的 V3.7.0.6；V3.7.1.1 已修复，用 `verify_release.py` 复验（见「验证 Release」）。
+- **`dyn_ref_price` / `vir_match` / `iopv` 三列一直为空** — 不是客户端问题，是前置没有下发 `SecurityExtraInfo` 数据块，见「CSV 输出」说明。
 
 ## 安全提示
 
