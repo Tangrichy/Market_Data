@@ -3,7 +3,7 @@
 期货与证券实时行情接入工具集，提供两个可直接运行的行情脚本：
 
 - [ctp_mdapi.py](ctp_mdapi.py) — 基于 CTP 的期货行情
-- [pybind_gtja/pull_data.py](pybind_gtja/pull_data.py) — 基于国泰君安 UDP 行情的沪深股票行情（仅 SSE/SZSE）
+- [pybind_gtja/pull_data.py](pybind_gtja/pull_data.py) — 基于国泰君安 UDP 行情的沪深股票/ETF 行情（仅 SSE/SZSE）
 
 ## 环境要求
 
@@ -400,11 +400,115 @@ exit / quit / q      # 退出
 
 非 TTY 环境（重定向、后台运行）会自动禁用命令线程，可用 `Ctrl+C` 或 `--duration` 退出。
 
+### SecurityExtraInfo：动态参考价 / 虚拟匹配量 / IOPV
+
+#### 字段定义
+
+V3.7.1.1 新增的结构体（`udpapi_new/include/GtjaMdStructV3.h`）：
+
+```c
+struct SecurityExtraInfo {
+    double   DynRefPrice;  // 动态参考价格(上交期权有效)
+    uint64_t VirMatch;     // 虚拟匹配量(上交所期权有效)
+    double   IOPV;         // 基金类产品有效
+};
+```
+
+| 字段 | 适用品种 | 含义 |
+|---|---|---|
+| `DynRefPrice` | 上交所**期权** | 交易所给出的动态参考价 |
+| `VirMatch` | 上交所**期权** | 集合竞价期间的虚拟匹配量 |
+| `IOPV` | **基金类**（ETF/LOF） | 基金份额参考净值，即 ETF 的"实时净值"，用来判断价格是否溢价 |
+
+注意三者的适用范围不同：股票本来就不该有这三个值，它们为空是正常的。
+
+#### "服务端没有下发"是什么意思
+
+GTJA 的行情包 = **一个包头 + 若干可选数据块**。包头用一组偏移量告诉 SDK 每个块在哪：
+
+```c
+struct GtjaMdHeaderFieldV3 {
+    uint8_t  FieldLen, MdType, Version, unused[1];
+    uint32_t SeqNum;
+    GtjaDateTime_t UpdateDateTime;
+    // 各字段起始地址与行情数据包开头偏移量（为实际偏移量除8，即值5表示位于5*8=40字节处）
+    // 偏移量为0表示无此字段
+    uint8_t InstrumentIdx, TradeInfoIdx, MBLInfoIdx, MBLCount,
+            StaticInfoIdx, BaseInfoIdx, InstrumentStatusIdx,
+            SecurityExtraInfoIdx;   // ← V3.7.1.1 新增的第 8 个
+};
+```
+
+SDK 的拆包逻辑等价于：
+
+```c
+pExtra = (header->SecurityExtraInfoIdx == 0) ? NULL
+       : (SecurityExtraInfo*)(packet + header->SecurityExtraInfoIdx * 8);
+```
+
+所以 Python 侧看到 `extra is None`，含义是**服务端发出的每一条包里 `SecurityExtraInfoIdx` 都是 0，即包内根本没有这个数据块**——不是绑定没转、不是指针悬空，也不是配置项没开。
+
+判定它不是客户端问题的依据：
+
+1. 同一条回调里其余 7 个块都有值（价格、成交量、五档、状态均正常）。签名错位的话症状会是数值错乱或崩溃，不会只表现成"最后一个指针恰好为 NULL"。
+2. `PySpi::OnRtnDepthSnapshot` 带 `override`，C++ 编译器已核对虚表槽位，签名与头文件逐字节一致。
+3. 股票本来就不该有这三个值，其 NULL 属正常；异常只出现在 ETF 的 `IOPV` 上。
+
+#### 实测记录（2026-10-28，交易时段）
+
+经 proxychains 连接真实前置，统计每条 tick 的 `extra` 是否非空：
+
+| 前置 | 标的 | 收到 tick | 带 `extra` |
+|---|---|---|---|
+| `183.193.54.200:21002`（SSE） | 600000 | 45 | **0** |
+| `183.193.54.200:21002`（SSE） | 510050 | 46 | **0** |
+| `183.193.54.200:21002`（SSE） | 510300 | 42 | **0** |
+| `183.193.54.200:21002`（SSE） | 512880 | 41 | **0** |
+| `183.193.54.200:21002`（SSE） | 588000 | 42 | **0** |
+| `183.63.193.58:42116`（SZSE） | 000001 / 300750 | 21 | **0** |
+
+结论：两台前置对**股票和基金**都没有携带该数据块。
+
+#### 可能原因
+
+| 可能原因 | 说明 | 如何确认 |
+|---|---|---|
+| 前置组包程序版本较旧 | 服务端仍按 3.7.0.x 的格式组包，不认识第 8 个偏移量字段 | 请 GTJA 确认前置版本 |
+| 前置未接入对应行情源 | 基金 IOPV、上交期权行情在交易所侧是独立行情流，前置没转发就没有原料 | 请 GTJA 确认覆盖范围 |
+| 品种 / 通道白名单 | 该前置只转发股票与基金的基础快照 | 订阅期权后看是否有 `extra` |
+| 协议版本协商 | 包头 `Version` 仍为旧值，服务端按旧格式组包 | 抓包查看包头字节 |
+
+就现有证据看，**最可能是前置还没升级到 V3.7.1.1 的组包逻辑**：`IOPV` 对 ETF 有明确业务意义，却全为空，而 SDK 侧的其他字段一切正常。
+
+#### 证据边界
+
+- `IOPV`：**已确认缺失**——4 只 ETF 各 40+ 条 tick，无一携带。
+- `DynRefPrice` / `VirMatch`：**未验证**——它们只对"上交期权"有效，本轮测试没有订阅过期权，不能据此断言缺失。
+- 不影响其他字段的正确性，也不影响 `Release()` 结论（见「验证 Release」）。
+
+#### 代码侧如何处理
+
+`SecurityExtraInfo*` 可能为 `NULL`，回调中必须先判空（`pull_data.py` 已如此处理）：
+
+```python
+dyn_ref_price = extra.DynRefPrice if extra else None
+vir_match     = extra.VirMatch    if extra else None
+iopv          = extra.IOPV        if extra else None
+```
+
+对应 CSV 三列留空。若后续前置开始下发，无需改动代码，三列会自动有值。
+
+#### 进一步确认的方法
+
+1. 订阅一只**上交所期权**（代码形如 `1000xxxxx`）：若期权也没有 `extra`，说明整块钱都未下发；若期权有、ETF 没有，则说明是按品种裁剪。
+2. 抓包查看包头 `SecurityExtraInfoIdx` 原始字节，取得直接证据。
+3. 向 GTJA 确认前置组包程序是否已支持该字段、需要接入哪一路行情源。
+
 ### CSV 输出
 
 列依次为：`recv_time`、`conn_id`、`exchange`、`symbol`、`date`、`time`、`milli`、`last_price`、`volume`、`turnover`、`open_interest`，随后按 `--levels` 重复 `bid_price_n`、`bid_volume_n`、`ask_price_n`、`ask_volume_n`，接着为 `status`，最后是 V3.7.1.1 新增的三列 `dyn_ref_price`、`vir_match`、`iopv`。
 
-> 这三列来自 `SecurityExtraInfo`，目前**实测恒为空**：两台前置（21002 / 42116）对股票和 510050/510300/512880/588000 等基金各 40+ 条 tick 均未携带该数据块。字段本身是通的（回调正常、其他字段无误），缺的是服务端下发，需向 GTJA 确认前置版本与行情源覆盖范围。下游若按固定列数解析，请注意这 3 列的存在。
+> 后三列来自 `SecurityExtraInfo`，目前**实测恒为空**（服务端未下发该数据块），详见上文「SecurityExtraInfo：动态参考价 / 虚拟匹配量 / IOPV」。下游若按固定列数解析，请注意这 3 列的存在。
 
 ---
 
@@ -417,7 +521,7 @@ exit / quit / q      # 退出
 - **登录成功但无行情** — 检查股票代码与交易所是否匹配、是否处于交易时段；只能使用 6 位沪深股票/ETF 代码，期货合约即使订阅成功也不会收到数据。
 - **换 SDK 版本后导入报错或收到乱码** — V3.7.1.1 对 `OnRtnDepthSnapshot` 做了 ABI 破坏性改动，**旧扩展不能配新库**（反之亦然）。必须用同一份 `udpapi_new` 头文件重新编译扩展；`python setup.py build_ext --inplace --force`。
 - **`Release()` 卡住不返回** — 只发生在旧的 V3.7.0.6；V3.7.1.1 已修复，用 `verify_release.py` 复验（见「验证 Release」）。
-- **`dyn_ref_price` / `vir_match` / `iopv` 三列一直为空** — 不是客户端问题，是前置没有下发 `SecurityExtraInfo` 数据块，见「CSV 输出」说明。
+- **`dyn_ref_price` / `vir_match` / `iopv` 三列一直为空** — 不是客户端问题，是前置没有下发 `SecurityExtraInfo` 数据块，见「SecurityExtraInfo：动态参考价 / 虚拟匹配量 / IOPV」一节。
 
 ## 安全提示
 
