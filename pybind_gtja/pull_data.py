@@ -181,6 +181,8 @@ class DataSpi(gtja_udp_api.PySpi):
         for i in range(1, self.cfg.levels + 1):
             headers.extend([f"bid_price_{i}", f"bid_volume_{i}", f"ask_price_{i}", f"ask_volume_{i}"])
         headers.append("status")
+        # SDK V3.7.1.1 新增字段；旧版 SDK 下恒为空
+        headers.extend(["dyn_ref_price", "vir_match", "iopv"])
         self.csv_writer.writerow(headers)
         self.csv_file.flush()
 
@@ -208,7 +210,8 @@ class DataSpi(gtja_udp_api.PySpi):
         self.logged_in_event.set()
 
     def _on_rtn_depth_snapshot(self, instrument, stamp, trade_info, base_info,
-                               static_info, mbl_length: int, mbl, status, conn_id: int):
+                               static_info, mbl_length: int, mbl, status, extra,
+                               conn_id: int):
         if not instrument:
             return
 
@@ -249,6 +252,11 @@ class DataSpi(gtja_udp_api.PySpi):
         if status:
             status_str = "".join(status.InstrumentStauts)
 
+        # SDK V3.7.1.1 扩展字段（动态参考价/虚拟匹配量/IOPV）
+        dyn_ref_price = extra.DynRefPrice if extra else None
+        vir_match = extra.VirMatch if extra else None
+        iopv = extra.IOPV if extra else None
+
         tick = {
             "recv_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
             "conn_id": conn_id,
@@ -263,6 +271,9 @@ class DataSpi(gtja_udp_api.PySpi):
             "open_interest": open_interest,
             "bids": bids,
             "status": status_str.strip(),
+            "dyn_ref_price": dyn_ref_price,
+            "vir_match": vir_match,
+            "iopv": iopv,
         }
 
         self.tick_queue.put(tick)
@@ -284,6 +295,8 @@ class DataSpi(gtja_udp_api.PySpi):
                 line += f" bid={b['bid_price']}/{b['bid_volume']} ask={b['ask_price']}/{b['ask_volume']}"
         if status_str.strip():
             line += f" status={status_str.strip()}"
+        if extra:
+            line += f" ref={dyn_ref_price} vmatch={vir_match} iopv={iopv}"
         print(line)
 
         # 写入 CSV（写入全部 levels 档）
@@ -299,6 +312,7 @@ class DataSpi(gtja_udp_api.PySpi):
                 else:
                     row.extend([None, None, None, None])
             row.append(status_str.strip())
+            row.extend([dyn_ref_price, vir_match, iopv])
             with self._csv_lock:
                 self.csv_writer.writerow(row)
                 self.csv_file.flush()

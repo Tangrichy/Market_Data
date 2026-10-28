@@ -34,7 +34,8 @@ public:
     std::function<void(const GtjaMdRspUserLoginField*, const GtjaMdRspInfoField*, int, bool, int)> on_rsp_user_login;
     std::function<void(const GtjaMdInstrumentFieldV3*, const TGtjaDateTime*, const GtjaMdTradeInfoFieldV3*,
                        const GtjaMdBaseInfoFieldV3*, const GtjaMdStaticInfoFieldV3*, int,
-                       const std::vector<GtjaMdMBLFieldV3>&, const GtjaMdInstrumentStatusV3*, int)> on_rtn_depth_snapshot;
+                       const std::vector<GtjaMdMBLFieldV3>&, const GtjaMdInstrumentStatusV3*,
+                       const SecurityExtraInfo*, int)> on_rtn_depth_snapshot;
     std::function<void(const GtjaDepthMarketDataField*, int)> on_rsp_last_snapshot;
     std::function<void(const GtjaMdSpecificInstrumentField*, const GtjaMdRspInfoField*, int, int)> on_rsp_sub_market_data;
     std::function<void(const GtjaMdSpecificInstrumentField*, const GtjaMdRspInfoField*, int, int)> on_rsp_unsub_market_data;
@@ -56,13 +57,14 @@ public:
                                       const GtjaMdTradeInfoFieldV3* pTradeInfo, const GtjaMdBaseInfoFieldV3* pBaseInfo,
                                       const GtjaMdStaticInfoFieldV3* pStaticInfo, int MBLLength,
                                       const GtjaMdMBLFieldV3* pMBL, const GtjaMdInstrumentStatusV3* pInstrumentStatus,
-                                      int nConnectID) override {
+                                      const SecurityExtraInfo* pSecurityExtra, int nConnectID) override {
         std::vector<GtjaMdMBLFieldV3> mbl_vec;
         if (pMBL && MBLLength > 0) {
             mbl_vec.assign(pMBL, pMBL + MBLLength);
         }
         if (on_rtn_depth_snapshot) on_rtn_depth_snapshot(pInstrument, pStamp, pTradeInfo, pBaseInfo, pStaticInfo,
-                                                          MBLLength, mbl_vec, pInstrumentStatus, nConnectID);
+                                                          MBLLength, mbl_vec, pInstrumentStatus, pSecurityExtra,
+                                                          nConnectID);
     }
     void GTJAMDAPI OnRspLastSnapshot(const GtjaDepthMarketDataField* pDepthMarketData, int nConnectID) override {
         if (on_rsp_last_snapshot) on_rsp_last_snapshot(pDepthMarketData, nConnectID);
@@ -299,7 +301,8 @@ PYBIND11_MODULE(gtja_udp_api, m) {
         .def_readwrite("MBLCount", &GtjaMdHeaderFieldV3::MBLCount)
         .def_readwrite("StaticInfoIdx", &GtjaMdHeaderFieldV3::StaticInfoIdx)
         .def_readwrite("BaseInfoIdx", &GtjaMdHeaderFieldV3::BaseInfoIdx)
-        .def_readwrite("InstrumentStatusIdx", &GtjaMdHeaderFieldV3::InstrumentStatusIdx);
+        .def_readwrite("InstrumentStatusIdx", &GtjaMdHeaderFieldV3::InstrumentStatusIdx)
+        .def_readwrite("SecurityExtraInfoIdx", &GtjaMdHeaderFieldV3::SecurityExtraInfoIdx);
 
     py::class_<GtjaMdInstrumentFieldV3>(m, "GtjaMdInstrumentFieldV3")
         .def(py::init<>())
@@ -345,6 +348,15 @@ PYBIND11_MODULE(gtja_udp_api, m) {
         .def_readwrite("InstrumentType", &GtjaMdInstrumentStatusV3::InstrumentType)
         BIND_CHAR_ARRAY(GtjaMdInstrumentStatusV3, MDStreamID)
         BIND_CHAR_ARRAY(GtjaMdInstrumentStatusV3, InstrumentStauts);
+
+    // Added in SDK V3.7.1.1 (20250624). OnRtnDepthSnapshot gained a trailing
+    // const SecurityExtraInfo* argument; the struct itself is absent from
+    // V3.7.0.6, so this binding only compiles against the newer headers.
+    py::class_<SecurityExtraInfo>(m, "SecurityExtraInfo")
+        .def(py::init<>())
+        .def_readwrite("DynRefPrice", &SecurityExtraInfo::DynRefPrice)   // 动态参考价(上交期权有效)
+        .def_readwrite("VirMatch", &SecurityExtraInfo::VirMatch)         // 虚拟匹配量(上交所期权有效)
+        .def_readwrite("IOPV", &SecurityExtraInfo::IOPV);                // 基金类产品有效
 
     // -----------------------------------------------------------------------
     // Old snapshot struct (used by OnRspLastSnapshot)
@@ -394,9 +406,11 @@ PYBIND11_MODULE(gtja_udp_api, m) {
     // -----------------------------------------------------------------------
     py::class_<GtjaMdApiWrapper>(m, "GtjaMdUserApi")
         .def(py::init<const std::string&>(), py::arg("log_path") = "api.log")
-        .def("Release", &GtjaMdApiWrapper::release)
+        // Release/Join hand control to the SDK's own threads, so drop the GIL
+        // for the duration: a stuck SDK can then never wedge the interpreter.
+        .def("Release", &GtjaMdApiWrapper::release, py::call_guard<py::gil_scoped_release>())
         .def("Init", &GtjaMdApiWrapper::Init)
-        .def("Join", &GtjaMdApiWrapper::Join)
+        .def("Join", &GtjaMdApiWrapper::Join, py::call_guard<py::gil_scoped_release>())
         .def("RegisterFront", &GtjaMdApiWrapper::RegisterFront)
         .def("RegisterSpi", &GtjaMdApiWrapper::RegisterSpi)
         .def("SetConfig", &GtjaMdApiWrapper::SetConfig)

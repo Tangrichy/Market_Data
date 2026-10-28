@@ -13,7 +13,7 @@
   - 用 3.10 / 3.11 / **3.12** 跑 → 先重新编译，否则报 `ModuleNotFoundError: No module named 'gtja_udp_api'`（Python 会直接忽略 ABI 不匹配的 `.so`）。
 - `pip install pybind11`、g++（需支持 C++17）、`libGtjaMdUserApi.so`
 - Linux x86_64，CTP 需要中文 locale（GBK/GB18030）
-- **使用国泰君安 UDP 行情前，必须先准备 `udpapi/` SDK**（C++ 头文件 + 动态库），见下文「行情 SDK 依赖」
+- **使用国泰君安 UDP 行情前，必须先准备 `udpapi_new/` SDK**（C++ 头文件 + 动态库），见下文「行情 SDK 依赖」
 
 > 本机默认的 `python` 是 conda base 的 3.11，`pull_data.py` 需显式指定一个**已为其编译过扩展**的解释器（py39，或下文的 rqsdk/3.10）。
 
@@ -65,7 +65,7 @@ timeout 100 proxychains4 -q -f /etc/proxychains4.conf \
 
 #### 新设备 / 其他 Python 版本（3.10 / 3.11 / 3.12）
 
-`udpapi` 的 `libGtjaMdUserApi.so` 是纯 C++ 动态库，与 Python 版本无关；**只有 pybind11 绑定模块需要重编**，所以任何 Python 版本都能用，代价是一次编译。以 3.12 为例：
+`udpapi_new` 的 `libGtjaMdUserApi.so` 是纯 C++ 动态库，与 Python 版本无关；**只有 pybind11 绑定模块需要重编**，所以任何 Python 版本都能用，代价是一次编译。以 3.12 为例：
 
 ```bash
 # 1) 准备一个独立的 3.12 环境（conda 亦可：conda create -n py312 python=3.12）
@@ -115,13 +115,13 @@ python pull_data.py --front tcp://183.193.54.200:21002 \
 | `No module named 'setuptools'` | 3.12 venv 未自带 setuptools → `pip install setuptools` |
 | `Python.h: No such file or directory` | 缺开发头文件 → 装 `python3.12-dev`（或用 conda 环境） |
 | `pybind11 requires C++17 or later` | 编译器过旧 → 升级 g++，或改用 `pybind11<3` |
-| `找不到 头文件目录: .../udpapi/include` | SDK 路径不对 → 见下文「SDK 位置」，或用 `GTJA_UDPAPI_ROOT` 指定 |
+| `找不到 头文件目录: .../udpapi_new/include` | SDK 路径不对 → 见下文「SDK 位置」，或用 `GTJA_UDPAPI_ROOT` 指定 |
 
 ---
 
 ## 行情 SDK 依赖（必须先安装）
 
-`pybind_gtja/pull_data.py` **不是纯 Python 实现**，它通过 `gtja_udp_api` 扩展调用国泰君安官方 UDP 行情 SDK（udpapi）。拉取证券行情必须依赖 SDK 提供的 C++ 头文件和动态库：
+`pybind_gtja/pull_data.py` **不是纯 Python 实现**，它通过 `gtja_udp_api` 扩展调用国泰君安官方 UDP 行情 SDK（udpapi_new，V3.7.1.1）。拉取证券行情必须依赖 SDK 提供的 C++ 头文件和动态库：
 
 - 编译扩展时需要 `include/*.h` 和 `libGtjaMdUserApi.so`；
 - 运行时扩展会加载 `libGtjaMdUserApi.so`，由它建立行情连接并解析数据。
@@ -130,22 +130,23 @@ python pull_data.py --front tcp://183.193.54.200:21002 \
 
 ### SDK 位置
 
-本仓库已包含 SDK，位于 [`udpapi/`](udpapi/)：
+本仓库已包含 SDK，位于 [`udpapi_new/`](udpapi_new/)：
 
 ```
-udpapi/
+udpapi_new/                           # SDK V3.7.1.1 (build 20250624)
 ├── include/                          # C++ 头文件（编译必需）
 │   ├── GtjaMdStructV3.h
 │   └── GtjaMdUserApi.h
 ├── Linux64/
 │   ├── gcc9.3.1/libGtjaMdUserApi.so  # 当前使用的动态库
-│   └── gcc4.4.7/ ... gcc8.3.1/       # 其他 gcc 版本
+│   └── gcc4.8.5/ ... gcc8.3.1/       # 其他 gcc 版本
+│   └── *_onload8/ *_onload9.2/       # Solarflare Onload 加速版
 ├── Win32/  Win64/                    # Windows 库
 ├── demo/                             # 官方示例
 └── UDP行情api使用说明.html            # 官方接口文档
 ```
 
-**SDK 不需要复制到 `pybind_gtja/` 下**，保持仓库根目录的 `udpapi/` 即可。关键只有两点：
+**SDK 不需要复制到 `pybind_gtja/` 下**，保持仓库根目录的 `udpapi_new/` 即可。关键只有两点：
 
 1. `pybind_gtja/setup.py` 中的 `UDPAPI_ROOT` 指向 SDK 根目录；
 2. 编译出的扩展能通过 rpath（或 `LD_LIBRARY_PATH`）找到 `libGtjaMdUserApi.so`。
@@ -153,14 +154,14 @@ udpapi/
 `setup.py` 已按本仓库布局自动定位 SDK，无需修改：
 
 ```python
-UDPAPI_ROOT = os.getenv("GTJA_UDPAPI_ROOT") or os.path.join(os.path.dirname(ROOT), "udpapi")
-# 即 /root/private_data/Market_Data/udpapi
+UDPAPI_ROOT = os.getenv("GTJA_UDPAPI_ROOT") or os.path.join(os.path.dirname(ROOT), "udpapi_new")
+# 即 /root/private_data/Market_Data/udpapi_new
 ```
 
 编译脚本会在 `Linux64/` 下依次查找 `gcc9.3.1` → `gcc8.3.1` → `gcc7.3.1` → `gcc4.8.5` → `gcc4.4.7`，使用第一个存在 `libGtjaMdUserApi.so` 的目录。SDK 放在别处时可用环境变量覆盖：
 
 ```bash
-export GTJA_UDPAPI_ROOT=/path/to/udpapi              # SDK 根目录
+export GTJA_UDPAPI_ROOT=/path/to/udpapi_new           # SDK 根目录
 export GTJA_UDPAPI_LIB_DIR=/path/to/gcc9.3.1         # 指定动态库目录（可选）
 ```
 
@@ -181,16 +182,16 @@ ldd gtja_udp_api*.so | grep GtjaMdUserApi
 `ldd` 应输出类似：
 
 ```
-libGtjaMdUserApi.so => /root/private_data/Market_Data/udpapi/Linux64/gcc9.3.1/libGtjaMdUserApi.so
+libGtjaMdUserApi.so => /root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1/libGtjaMdUserApi.so
 ```
 
 如果运行时仍提示找不到动态库：
 
 ```bash
-export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi/Linux64/gcc9.3.1:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1:$LD_LIBRARY_PATH
 ```
 
-> **换机器 / 换目录后必须重新编译。** 仓库里提交的 `gtja_udp_api.cpython-39-x86_64-linux-gnu.so` 在旧构建目录下编译，rpath 被写成了当时的绝对路径 `/root/private_data/trading/udpapi/Linux64/gcc9.3.1`。换到本仓库或其他机器后该目录并不存在，即使能导入扩展也会因找不到动态库而失败。重新编译会按当前仓库的实际路径重写 rpath。
+> **换机器 / 换目录后必须重新编译。** 仓库里提交的 `gtja_udp_api.cpython-39-x86_64-linux-gnu.so` 在旧构建目录下编译，rpath 被写成了当时的绝对路径 `/root/private_data/trading/udpapi_new/Linux64/gcc9.3.1`。换到本仓库或其他机器后该目录并不存在，即使能导入扩展也会因找不到动态库而失败。重新编译会按当前仓库的实际路径重写 rpath。
 
 以下命令**从仓库根目录**（`Market_Data/`）执行：
 
@@ -198,7 +199,7 @@ export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi/Linux64/gcc9.3.1:$L
 rm -rf pybind_gtja/build
 cd pybind_gtja
 python setup.py build_ext --inplace
-readelf -d gtja_udp_api*.so | grep -Ei 'rpath|runpath'   # 应指向本仓库的 udpapi/Linux64/gcc9.3.1
+readelf -d gtja_udp_api*.so | grep -Ei 'rpath|runpath'   # 应指向本仓库的 udpapi_new/Linux64/gcc9.3.1
 ```
 
 ---
@@ -263,9 +264,9 @@ python ctp_mdapi.py
 
 通过 pybind11 封装国泰君安官方 C++ 行情 API，**仅用于订阅沪深股票**（上交所/深交所），可将 tick 打印到控制台并写入 CSV。不支持期货、期权及黄金现货合约。
 
-### 前置要求：安装 udpapi SDK
+### 前置要求：安装 udpapi_new SDK
 
-`pull_data.py` 依赖国泰君安官方 UDP 行情 SDK（C++ 头文件 + 动态库）。SDK 已随仓库提供在 [`udpapi/`](udpapi/)，**无需放到 `pybind_gtja/` 下**；路径配置、编译与验证方法见上文「行情 SDK 依赖（必须先安装）」。
+`pull_data.py` 依赖国泰君安官方 UDP 行情 SDK（C++ 头文件 + 动态库）。SDK 已随仓库提供在 [`udpapi_new/`](udpapi_new/)，**无需放到 `pybind_gtja/` 下**；路径配置、编译与验证方法见上文「行情 SDK 依赖（必须先安装）」。
 
 ### 编译扩展
 
@@ -378,7 +379,7 @@ exit / quit / q      # 退出
 - **CTP locale 崩溃** — 安装 `locales-all` 并执行 `locale-gen`。
 - **CTP 连接超时** — 检查 `MARKET_DATA_SERVERS` 中的地址与端口、本机防火墙及网络连通性。
 - **`ModuleNotFoundError: No module named 'gtja_udp_api'`** — 九成是 Python 版本与扩展的 ABI 标签不一致（.so 文件名里的 `cpython-3xx`）。Python 3.11/3.12 会直接忽略 `cpython-39` 的 `.so`。`pull_data.py` 现在会打印已有的 `.so` 版本、当前解释器版本和两种解决办法；快速处理：要么切到匹配的解释器，要么在当前解释器下 `rm -rf build && python setup.py build_ext --inplace` 重编。
-- **`gtja_udp_api` 找不到 `libGtjaMdUserApi.so`** — 说明 `.so` 的 rpath 指向了不存在的旧路径（如 `/root/private_data/trading/udpapi`），在新环境里重新编译即可重写 rpath；或临时 `export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi/Linux64/gcc9.3.1:$LD_LIBRARY_PATH`。
+- **`gtja_udp_api` 找不到 `libGtjaMdUserApi.so`** — 说明 `.so` 的 rpath 指向了不存在的旧路径（如 `/root/private_data/trading/udpapi`），在新环境里重新编译即可重写 rpath；或临时 `export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1:$LD_LIBRARY_PATH`。
 - **登录成功但无行情** — 检查股票代码与交易所是否匹配、是否处于交易时段；只能使用 6 位沪深股票代码，期货合约即使订阅成功也不会收到数据。
 
 ## 安全提示

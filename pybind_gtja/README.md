@@ -17,7 +17,11 @@
 - Python 3.9+（本机使用 conda 环境 `py39`；**扩展的 ABI 与版本绑定，用哪个版本运行就用哪个版本编译**）
 - pybind11（Python 3.12 需 `>=2.11.1`；pybind11 3.x 需编译器支持 C++17）
 - g++（当前系统为 11.4.0，与 gcc9.3.1 编译的官方库可兼容）
-- **国泰君安 udpapi SDK**：位于仓库根目录的 [`../udpapi`](../udpapi)，提供 `include/` 头文件和 `Linux64/gcc9.3.1/libGtjaMdUserApi.so`；没有 SDK 无法编译或运行
+- **国泰君安 udpapi SDK**：位于仓库根目录的 [`../udpapi_new`](../udpapi_new)，提供 `include/` 头文件和 `Linux64/gcc9.3.1/libGtjaMdUserApi.so`；没有 SDK 无法编译或运行
+- **SDK 版本：V3.7.1.1（build 20250624）**。相对旧的 V3.7.0.6，本分支依赖的三处差异：
+  1. `GtjaMdUserSpi::OnRtnDepthSnapshot` 新增 `const SecurityExtraInfo*` 参数（**ABI 不兼容**，旧绑定无法直接加载新库）；
+  2. 新增 `SecurityExtraInfo{DynRefPrice, VirMatch, IOPV}` 与 `GtjaMdHeaderFieldV3::SecurityExtraInfoIdx`；
+  3. `Release()` 会主动唤醒停在 `select` 的接收线程，不再依赖下一条报文（旧版正是因此卡死，见 Issue.md）。
 
 ## 编译
 
@@ -30,7 +34,7 @@ python setup.py build_ext --inplace
 
 编译成功后会在当前目录生成 `gtja_udp_api.cpython-3XX-x86_64-linux-gnu.so`，其中 `3XX` 是编译用的 Python 版本。
 
-> **新环境 / 换了目录后要重新编译。** 仓库里提交的 `.so` 把旧的绝对路径（`/root/private_data/trading/udpapi/...`）写进了 rpath，跨机器会找不到动态库。建议先 `rm -rf build` 再编译，避免复用旧目标文件；编译后用 `readelf -d gtja_udp_api*.so | grep -Ei 'rpath|runpath'` 确认指向本仓库的 `udpapi/Linux64/gcc9.3.1`（不同环境下可能是 `RUNPATH` 或 `RPATH`，两者都能生效）。
+> **新环境 / 换了目录后要重新编译。** 仓库里提交的 `.so` 把旧的绝对路径（`/root/private_data/trading/udpapi/...`）写进了 rpath，跨机器会找不到动态库。建议先 `rm -rf build` 再编译，避免复用旧目标文件；编译后用 `readelf -d gtja_udp_api*.so | grep -Ei 'rpath|runpath'` 确认指向本仓库的 `udpapi_new/Linux64/gcc9.3.1`（不同环境下可能是 `RUNPATH` 或 `RPATH`，两者都能生效）。
 
 ### 在 Python 3.10 / 3.11 / 3.12 上使用
 
@@ -152,9 +156,9 @@ python pull_data.py
 
 ## 注意事项
 
-1. SDK 保持在仓库根目录的 `../udpapi` 即可，**不需要复制到本目录**。`setup.py` 通过 `UDPAPI_ROOT` 定位 SDK 根目录，并设置 `rpath`：
+1. SDK 保持在仓库根目录的 `../udpapi_new` 即可，**不需要复制到本目录**。`setup.py` 通过 `UDPAPI_ROOT` 定位 SDK 根目录，并设置 `rpath`：
    ```python
-   UDPAPI_ROOT = os.getenv("GTJA_UDPAPI_ROOT") or os.path.join(os.path.dirname(ROOT), "udpapi")
+   UDPAPI_ROOT = os.getenv("GTJA_UDPAPI_ROOT") or os.path.join(os.path.dirname(ROOT), "udpapi_new")
    ```
    编译脚本会在 `Linux64/` 下自动挑选存在的 gcc 版本目录（优先 `gcc9.3.1`），SDK 放在别处时可用 `GTJA_UDPAPI_ROOT` / `GTJA_UDPAPI_LIB_DIR` 覆盖。
 
@@ -168,7 +172,7 @@ api = gtja_udp_api.GtjaMdUserApi("api.log")
 释放时调用 `api.Release()`，或让对象自然析构即可。
 2. 运行时应能通过 `rpath` 自动找到动态库；如仍报找不到库，可手动设置：
    ```bash
-   export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi/Linux64/gcc9.3.1:$LD_LIBRARY_PATH
+   export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1:$LD_LIBRARY_PATH
    ```
 3. 订阅功能仅在 TCP 单播模式下有效，组播/广播模式会自动推送全量行情。
 4. `GtjaMdInstrumentFieldV3.InstrumentID` 在 C 头文件中是柔性数组，Python 侧通过只读属性获取完整字符串。

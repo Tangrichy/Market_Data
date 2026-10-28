@@ -18,8 +18,11 @@ import os
 # Paths to the official C++ API header and library
 # ---------------------------------------------------------------------------
 ROOT = os.path.dirname(os.path.abspath(__file__))
-# SDK lives at <repo>/udpapi, i.e. one level above this directory.
-UDPAPI_ROOT = os.getenv("GTJA_UDPAPI_ROOT") or os.path.join(os.path.dirname(ROOT), "udpapi")
+# SDK lives at <repo>/udpapi_new (V3.7.1.1), one level above this directory.
+# The old <repo>/udpapi (V3.7.0.6) is still selectable via GTJA_UDPAPI_ROOT, but
+# it does not build against this wrapper: V3.7.1.1 changed the signature of
+# GtjaMdUserSpi::OnRtnDepthSnapshot.
+UDPAPI_ROOT = os.getenv("GTJA_UDPAPI_ROOT") or os.path.join(os.path.dirname(ROOT), "udpapi_new")
 
 INCLUDE_DIR = os.path.join(UDPAPI_ROOT, "include")
 
@@ -51,7 +54,7 @@ for _label, _path in (
     if not os.path.isdir(_path):
         raise SystemExit(
             "找不到 %s: %s\n"
-            "请确认 udpapi SDK 位于 %s（或设置 GTJA_UDPAPI_ROOT 指向 SDK 根目录）。"
+            "请确认 udpapi_new SDK 位于 %s（或设置 GTJA_UDPAPI_ROOT 指向 SDK 根目录）。"
             % (_label, _path, UDPAPI_ROOT)
         )
 
@@ -77,7 +80,7 @@ ext_modules = [
 
 setup(
     name="gtja-udp-api",
-    version="3.7.0.6",
+    version="3.7.1.1",
     description="Python binding for Guotai Junan UDP Market Data API V3",
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
