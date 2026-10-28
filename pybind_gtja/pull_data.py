@@ -87,9 +87,9 @@ def get_config():
     parser.add_argument("--user", default=os.getenv("GTJA_USER", "83607651"), help="资金账号")
     parser.add_argument("--password", default=os.getenv("GTJA_PASSWORD", "88888888"), help="登录密码")
     parser.add_argument("--symbols", default=os.getenv("GTJA_SYMBOLS", "000001"),
-                        help="订阅股票代码（6 位数字），逗号分隔")
+                        help="订阅代码（6 位股票 / 8 位沪深期权），逗号分隔")
     parser.add_argument("--exchange", default=os.getenv("GTJA_EXCHANGE", ""),
-                        help="指定交易所: sse/szse（本工具仅支持股票），空表示不指定")
+                        help="指定交易所: sse/szse（本工具支持股票/ETF 与沪深期权），空表示不指定")
     parser.add_argument("--cpu", default=os.getenv("GTJA_CPU", "1"), help="绑定 CPU 核")
     parser.add_argument("--no-efvi", action="store_true", default=os.getenv("GTJA_NO_EFVI", "").lower() == "true",
                         help="关闭 efvi 加速")
@@ -127,8 +127,19 @@ EXCHANGE_NAME_TO_TYPE = {
 
 
 def validate_stock_symbols(symbols: List[str]) -> List[str]:
-    """返回不符合沪深股票代码规则（6 位数字）的合约。"""
-    return [s for s in symbols if not (len(s) == 6 and s.isdigit())]
+    """返回不符合合约代码规则的代码。
+
+    支持三类：
+      * 沪深股票/ETF：6 位数字（600000、000001、510050）
+      * 上交所期权：8 位数字且以 1 开头（10011425 = 50ETF 期权）
+      * 深交所期权：8 位数字且以 9 开头（90007411 = 创业板ETF 期权）
+    """
+    def ok(s: str) -> bool:
+        if not s.isdigit():
+            return False
+        return len(s) == 6 or (len(s) == 8 and s[0] in ("1", "9"))
+
+    return [s for s in symbols if not ok(s)]
 
 
 def build_instruments(symbols: List[str], exchange: str = ""):
@@ -357,7 +368,7 @@ def main():
     symbols = [s.strip() for s in cfg.symbols.split(",") if s.strip()]
     invalid = validate_stock_symbols(symbols)
     if invalid:
-        print(f"错误: 本工具仅支持沪深股票代码（6 位数字），不支持: {', '.join(invalid)}")
+        print(f"错误: 仅支持 6 位股票代码或 8 位沪深期权代码，不支持: {', '.join(invalid)}")
         sys.exit(2)
     if not symbols:
         print("警告: 未指定订阅合约，登录后不会收到行情。使用 --symbols 指定，逗号分隔。")
@@ -420,7 +431,7 @@ def main():
             return
         invalid = validate_stock_symbols(syms)
         if invalid:
-            print(f"仅支持沪深股票代码（6 位数字），已忽略: {', '.join(invalid)}")
+            print(f"仅支持 6 位股票代码或 8 位沪深期权代码，已忽略: {', '.join(invalid)}")
             syms = [s for s in syms if s not in invalid]
             if not syms:
                 return

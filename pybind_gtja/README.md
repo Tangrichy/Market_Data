@@ -1,8 +1,8 @@
 # 国泰君安 UDP 行情 API Python 绑定
 
-基于 pybind11 对官方 C++ API（V3.7.x）做的 Python 封装，用于在 Python 3.9 环境下快速拉取**沪深股票**行情 tick 数据。
+基于 pybind11 对官方 C++ API（V3.7.x）做的 Python 封装，用于在 Python 3.9 环境下快速拉取行情 tick 数据。
 
-> 本工具仅支持上交所（SSE）和深交所（SZSE）股票，不支持期货合约。
+> 支持上交所（SSE）、深交所（SZSE）的股票与 ETF，以及沪深期权（8 位代码：`10011425`、`90007411`）；不支持期货合约。
 
 ## 文件说明
 
@@ -138,7 +138,7 @@ python pull_data.py
 - `--front`: 行情前置地址（SSE 用 21002，SZSE 用 42116）
 - `--user`: 资金账号
 - `--password`: 密码
-- `--symbols`: 股票代码，6 位数字，逗号分隔（如 `600000,688027`）
+- `--symbols`: 合约代码，逗号分隔。股票/ETF 为 6 位数字（如 `600000,688027`），期权为 8 位数字（上交所 `10011425`、深交所 `90007411`）
 - `--exchange`: 交易所，仅可选 `sse` / `szse`，留空由前置判断
 - `--cpu`: 绑定接收线程 CPU 核，默认 `1`
 - `--no-efvi`: 关闭 efvi 加速
@@ -149,10 +149,30 @@ python pull_data.py
 
 ## 支持范围
 
-- 仅支持上交所（`sse`）和深交所（`szse`）的 6 位数字股票代码；
-- 期货合约（如 `ag2612`）、非 6 位数字代码会被直接拒绝；
-- `21002` 端口前置只推送 SSE 行情，`42116` 端口前置只推送 SZSE 行情，不能混用；
-- 订阅成功后服务端会先快速回放当日历史 tick，再转入实时推送。
+- 支持上交所（`sse`）、深交所（`szse`）的 6 位股票/ETF 代码，以及 8 位期权代码：上交所期权以 `1` 开头，深交所期权以 `9` 开头；
+- 期货合约（如 `ag2612`）、其他位数或非数字代码会被直接拒绝；
+- `21002` 端口前置只推送 SSE 行情，`42116` 端口前置只推送 SZSE 行情，不能混用（期权按所属交易所选前置，并带 `--exchange sse` / `--exchange szse`）；
+- 订阅成功后服务端会先快速回放当日历史 tick，再转入实时推送；期权快照按固定间隔推送，上交所约 30 秒一档，深交所为数秒一档（实测 3–6 秒，故同样时长内条数远多于沪市）。
+
+### 期权拉取示例
+
+```bash
+# 上交所：50ETF 期权
+proxychains4 -q -f /etc/proxychains4.conf /opt/conda/envs/py39/bin/python -u pull_data.py \
+  --front tcp://183.193.54.200:21002 \
+  --user 83607651 --password 88888888 \
+  --symbols 10011425 --exchange sse \
+  --output opt_10011425.csv --duration 60
+
+# 深交所：创业板ETF 期权（注意是 8 位，9007411 会收不到任何数据）
+proxychains4 -q -f /etc/proxychains4.conf /opt/conda/envs/py39/bin/python -u pull_data.py \
+  --front tcp://183.63.193.58:42116 \
+  --user 83607651 --password 88888888 \
+  --symbols 90007411 --exchange szse \
+  --output opt_90007411.csv --duration 60
+```
+
+2026-10-28 实测：上交所 `10011425`（50ETF 期权）8 秒 17 条、深交所 `90007411`（创业板ETF 期权）8 秒 204 条，订阅返回 0，`last_price` / 五档盘口 / `open_interest`（持仓量）均有值，CSV 正常落盘。注意 `dyn_ref_price` / `vir_match` / `iopv` 三列在所有已测合约（股票、ETF、沪深期权）上均为空，原因见根目录 README 的 SecurityExtraInfo 一节。
 
 ## 注意事项
 
