@@ -101,18 +101,26 @@ proxychains4 -q -f /etc/proxychains4.conf \
 
 > 以下命令中的 `python` 指**编译该扩展时所用的解释器**（本机为 py39）。若用系统默认的 Python 3.11 而扩展是 cpython-39，会报 `ModuleNotFoundError: No module named 'gtja_udp_api'`；3.12 同理，需按上文重编。
 
+**`--front` 可省略**：脚本按 `--exchange`、代码后缀（`.SH`/`.SZ`）或代码前缀自动选择前置（SSE → `21002`，SZSE → `42116`）。显式给出的 `--front` 若与代码所属交易所冲突，脚本会在连接前直接报错——**连错前置不会报错，只会永远收不到行情**（例如用 SSE 的 21002 拉深市 `301079`）。
+
 ```bash
-# 上交所：21002 前置
+# 上交所：省略 --front，按代码自动选 21002
 python pull_data.py \
-    --front tcp://183.193.54.200:21002 \
     --user 00000001 \
     --password 88888888 \
     --symbols 600000,688027 \
-    --exchange sse \
     --output sse_ticks.csv \
     --duration 60
 
-# 深交所：42116 前置
+# 深交所：省略 --front，.SZ 后缀/3 开头代码自动选 42116
+python pull_data.py \
+    --user 00000001 \
+    --password 88888888 \
+    --symbols 301079.SZ \
+    --output szse_ticks.csv \
+    --duration 60
+
+# 也可显式指定（前置与交易所须匹配）
 python pull_data.py \
     --front tcp://183.63.193.58:42116 \
     --user 00000001 \
@@ -136,11 +144,11 @@ python pull_data.py
 
 ## 参数说明
 
-- `--front`: 行情前置地址（SSE 用 21002，SZSE 用 42116）
+- `--front`: 行情前置地址（SSE 用端口 21002，SZSE 用 42116）。**留空则按代码自动选择**；显式指定时会校验端口与交易所是否匹配
 - `--user`: 资金账号
 - `--password`: 密码
-- `--symbols`: 合约代码，逗号分隔。股票/ETF 为 6 位数字（如 `600000,688027`），期权为 8 位数字（上交所 `10011425`、深交所 `90007411`）
-- `--exchange`: 交易所，仅可选 `sse` / `szse`，留空由前置判断
+- `--symbols`: 合约代码，逗号分隔。股票/ETF 为 6 位数字（如 `600000,688027`），期权为 8 位数字（上交所 `10011425`、深交所 `90007411`）。可带 `.SH`/`.SS`/`.SZ` 后缀（如 `301079.SZ`），后缀优先于代码前缀
+- `--exchange`: 交易所，仅可选 `sse` / `szse`，留空则按代码后缀/前缀自动判断；与后缀冲突时报错
 - `--cpu`: 绑定接收线程 CPU 核，默认 `1`
 - `--no-efvi`: 关闭 efvi 加速
 - `--output`: 输出 csv 文件路径

@@ -11,7 +11,11 @@ Demo: 使用 pybind11 封装的国泰君安 UDP 行情 API 快速拉取沪深股
     python setup.py build_ext --inplace
 
 用法：
-    python pull_data.py --front tcp://183.193.54.200:21002 --user 00000001 --password 88888888 --symbols 600000,688027 --exchange sse
+    python pull_data.py --user 00000001 --password 88888888 --symbols 600000,688027
+    python pull_data.py --user 00000001 --password 88888888 --symbols 301079.SZ
+
+--front 可省略：未指定时按代码（或 --exchange）自动选择对应交易所的默认前置。
+深交所代码请勿连上交所前置——订阅会返回成功，但一条行情都不会推送。
 
 运行中可在控制台输入命令：
     sub 代码1 代码2 ...    # 动态订阅（仅股票）
@@ -83,13 +87,16 @@ except ImportError as _exc:
 # ---------------------------------------------------------------------------
 def get_config():
     parser = argparse.ArgumentParser(description="拉取国泰君安 UDP 行情")
-    parser.add_argument("--front", default=os.getenv("GTJA_FRONT", "tcp://114.94.154.60:21002"), help="行情前置地址") #"tcp://127.0.0.1:42116" 183.63.193.58:42116 tcp://114.94.154.60:21002
+    parser.add_argument("--front", default=os.getenv("GTJA_FRONT", ""),
+                        help="行情前置地址，留空则按代码/--exchange 自动选择默认前置 "
+                             "(SSE tcp://114.94.154.60:21002, SZSE tcp://183.63.193.58:42116)")
     parser.add_argument("--user", default=os.getenv("GTJA_USER", "83607651"), help="资金账号")
     parser.add_argument("--password", default=os.getenv("GTJA_PASSWORD", "88888888"), help="登录密码")
     parser.add_argument("--symbols", default=os.getenv("GTJA_SYMBOLS", "000001"),
-                        help="订阅代码（6 位股票 / 8 位沪深期权），逗号分隔")
+                        help="订阅代码（6 位股票 / 8 位沪深期权），逗号分隔，可带 .SH/.SZ 后缀")
     parser.add_argument("--exchange", default=os.getenv("GTJA_EXCHANGE", ""),
-                        help="指定交易所: sse/szse（本工具支持股票/ETF 与沪深期权），空表示不指定")
+                        help="指定交易所: sse/szse（本工具支持股票/ETF 与沪深期权），"
+                             "留空则按代码前缀/后缀自动判断")
     parser.add_argument("--cpu", default=os.getenv("GTJA_CPU", "1"), help="绑定 CPU 核")
     parser.add_argument("--no-efvi", action="store_true", default=os.getenv("GTJA_NO_EFVI", "").lower() == "true",
                         help="关闭 efvi 加速")
@@ -125,9 +132,33 @@ EXCHANGE_NAME_TO_TYPE = {
     "szse": gtja_udp_api._et_szse,
 }
 
+EXCHANGE_LABELS = {
+    "sse": "上交所(SSE)",
+    "szse": "深交所(SZSE)",
+}
+
+# 未指定 --front 时使用的默认前置。
+DEFAULT_FRONTS = {
+    "sse": "tcp://114.94.154.60:21002",   # 也常用 tcp://183.193.54.200:21002
+    "szse": "tcp://183.63.193.58:42116",  # 也常用 tcp://183.237.222.224:42116
+}
+
+# 实测：21002 只承载上交所，42116 只承载深交所。连错交易所时订阅仍返回
+# “成功”，但一条行情都不会推送，所以要在连接前就拦下来。
+FRONT_PORT_TO_EXCHANGE = {
+    21002: "sse",
+    42116: "szse",
+}
+
+# 代码后缀（vnpy / 常见行情软件写法），用于显式指定交易所。
+SYMBOL_SUFFIX_TO_EXCHANGE = {
+    "sh": "sse", "ss": "sse", "sse": "sse",
+    "sz": "szse", "szse": "szse",
+}
+
 
 def validate_stock_symbols(symbols: List[str]) -> List[str]:
-    """返回不符合合约代码规则的代码。
+    """返回不符合合约代码规则的代码（调用前请先去掉 .SH/.SZ 后缀）。
 
     支持三类：
       * 沪深股票/ETF：6 位数字（600000、000001、510050）
@@ -142,13 +173,104 @@ def validate_stock_symbols(symbols: List[str]) -> List[str]:
     return [s for s in symbols if not ok(s)]
 
 
+def normalize_symbols(raw_symbols: List[str]):
+    """去掉 .SH/.SZ 后缀，返回 (纯代码列表, {代码: 后缀指定的交易所})。
+
+    例：['301079.SZ', '600000'] -> (['301079', '600000'], {'301079': 'szse'})
+    """
+    symbols: List[str] = []
+    suffix_exchange = {}
+    for raw in raw_symbols:
+        code, _, suffix = raw.partition(".")
+        code = code.strip()
+        if not code:
+            continue
+        symbols.append(code)
+        suffix = suffix.strip().lower()
+        if not suffix:
+            continue
+        exch = SYMBOL_SUFFIX_TO_EXCHANGE.get(suffix)
+        if exch:
+            suffix_exchange[code] = exch
+        else:
+            print(f"警告: 忽略无法识别的后缀 .{suffix}（仅支持 .SH/.SS/.SZ），按代码前缀判断")
+    return symbols, suffix_exchange
+
+
+def infer_exchange(symbol: str) -> Optional[str]:
+    """按代码前缀推断交易所，无法确定时返回 None。
+
+      * 上交所：5xxxxx / 6xxxxx（股票、ETF）、9xxxxx（900 B 股）、
+        8 位 1 开头（50ETF 期权等）
+      * 深交所：0xxxxx / 2xxxxx / 3xxxxx（股票、B 股、创业板）、
+        8 位 9 开头（创业板ETF 期权）
+    """
+    if not symbol.isdigit():
+        return None
+    if len(symbol) == 8:
+        if symbol[0] == "1":
+            return "sse"
+        if symbol[0] == "9":
+            return "szse"
+        return None
+    if len(symbol) != 6:
+        return None
+    head = symbol[0]
+    if head in ("5", "6", "9"):
+        return "sse"
+    if head in ("0", "2", "3"):
+        return "szse"
+    return None
+
+
+def exchange_of_front(front: str) -> Optional[str]:
+    """按端口识别已知前置所属交易所；未知前置返回 None。"""
+    try:
+        port = int(front.rsplit(":", 1)[1].split("/")[0])
+    except (IndexError, ValueError):
+        return None
+    return FRONT_PORT_TO_EXCHANGE.get(port)
+
+
+def resolve_exchange(symbols: List[str], suffix_exchange, explicit: str):
+    """确定本次连接的交易所，返回 'sse'/'szse'/None。
+
+    explicit 来自 --exchange；为空时按后缀/代码前缀推断。一台前置只承载一个
+    交易所，推断出多个交易所时抛出 ValueError（需分成两次运行）。
+    """
+    if explicit:
+        conflicts = [s for s, e in suffix_exchange.items() if e != explicit]
+        if conflicts:
+            raise ValueError(
+                f"--exchange {explicit} 与代码后缀不一致: {', '.join(conflicts)}"
+            )
+        return explicit
+
+    by_exchange = {}
+    for s in symbols:
+        e = suffix_exchange.get(s) or infer_exchange(s)
+        if e:
+            by_exchange.setdefault(e, []).append(s)
+    if not by_exchange:
+        return None
+    if len(by_exchange) > 1:
+        detail = "；".join(
+            f"{EXCHANGE_LABELS[e]}: {','.join(v)}" for e, v in by_exchange.items()
+        )
+        raise ValueError(
+            f"本次订阅同时包含多个交易所的代码（{detail}）。"
+            "一台前置只承载一个交易所，请分别运行或显式指定 --exchange/--front"
+        )
+    return next(iter(by_exchange))
+
+
 def build_instruments(symbols: List[str], exchange: str = ""):
-    """根据股票代码和交易所构建订阅结构体数组（仅上交所/深交所）。"""
-    exch_type = EXCHANGE_NAME_TO_TYPE.get(exchange.lower(), gtja_udp_api._et_unset) if exchange else gtja_udp_api._et_unset
+    """构建订阅结构体数组；exchange 为空时按代码前缀逐个推断交易所。"""
     insts = []
     for s in symbols:
+        exch = (exchange or infer_exchange(s) or "").lower()
         inst = gtja_udp_api.GtjaMdSpecificInstrumentField()
-        inst.ExchangeType = exch_type
+        inst.ExchangeType = EXCHANGE_NAME_TO_TYPE.get(exch, gtja_udp_api._et_unset)
         inst.InstrumentID = s
         insts.append(inst)
     return insts
@@ -365,7 +487,8 @@ def main():
         print("错误: 必须提供 --user 和 --password")
         sys.exit(1)
 
-    symbols = [s.strip() for s in cfg.symbols.split(",") if s.strip()]
+    raw_symbols = [s.strip() for s in cfg.symbols.split(",") if s.strip()]
+    symbols, suffix_exchange = normalize_symbols(raw_symbols)
     invalid = validate_stock_symbols(symbols)
     if invalid:
         print(f"错误: 仅支持 6 位股票代码或 8 位沪深期权代码，不支持: {', '.join(invalid)}")
@@ -373,7 +496,35 @@ def main():
     if not symbols:
         print("警告: 未指定订阅合约，登录后不会收到行情。使用 --symbols 指定，逗号分隔。")
 
-    print(f"前置地址: {cfg.front}")
+    # 交易所：--exchange 优先，否则按 .SH/.SZ 后缀或代码前缀推断
+    try:
+        exchange = resolve_exchange(symbols, suffix_exchange, cfg.exchange)
+    except ValueError as exc:
+        print(f"错误: {exc}")
+        sys.exit(2)
+
+    # 前置：未指定时按交易所选默认前置；指定了就校验和交易所是否匹配。
+    # 连错交易所不会报错，只是永远收不到该代码的行情，所以这里必须先拦。
+    if cfg.front:
+        front_exchange = exchange_of_front(cfg.front)
+        if exchange and front_exchange and front_exchange != exchange:
+            print(
+                f"错误: --front {cfg.front} 是{EXCHANGE_LABELS[front_exchange]}前置，"
+                f"但订阅代码属于{EXCHANGE_LABELS[exchange]}（{', '.join(symbols)}）。\n"
+                f"  改用{EXCHANGE_LABELS[exchange]}前置: --front {DEFAULT_FRONTS[exchange]}\n"
+                f"  或省略 --front，由代码自动选择（默认 {DEFAULT_FRONTS[exchange]}）"
+            )
+            sys.exit(2)
+        if exchange is None:
+            exchange = front_exchange
+    else:
+        if exchange is None:
+            exchange = "sse"
+            print(f"警告: 无法从订阅代码推断交易所，默认连接{EXCHANGE_LABELS[exchange]}前置")
+        cfg.front = DEFAULT_FRONTS[exchange]
+    cfg.exchange = exchange or ""
+
+    print(f"前置地址: {cfg.front}" + (f"（{EXCHANGE_LABELS[cfg.exchange]}）" if cfg.exchange else ""))
     print(f"账号: {cfg.user}")
     print(f"订阅合约: {symbols}")
     print(f"CPU 绑定: {cfg.cpu}, 关闭 efvi: {cfg.no_efvi}")
@@ -426,15 +577,24 @@ def main():
     stop_event = threading.Event()
     api_call_lock = threading.Lock()
 
-    def _send_sub(syms: list):
-        if not syms:
+    def _send_sub(raw_syms: list):
+        if not raw_syms:
             return
+        syms, live_suffix = normalize_symbols(raw_syms)
         invalid = validate_stock_symbols(syms)
         if invalid:
             print(f"仅支持 6 位股票代码或 8 位沪深期权代码，已忽略: {', '.join(invalid)}")
             syms = [s for s in syms if s not in invalid]
             if not syms:
                 return
+        # 一台前置只承载一个交易所：动态订阅别所代码会“成功”但永远收不到行情
+        for s in syms:
+            e = live_suffix.get(s) or infer_exchange(s)
+            if e and cfg.exchange and e != cfg.exchange:
+                print(
+                    f"警告: {s} 属于{EXCHANGE_LABELS[e]}，当前连接的是"
+                    f"{EXCHANGE_LABELS[cfg.exchange]}前置，订阅成功也不会有行情推送"
+                )
         insts = build_instruments(syms, cfg.exchange)
         with api_call_lock:
             ret = api.ReqSubMarketData(insts, 0, conn_id)
@@ -444,9 +604,10 @@ def main():
             subscribed_symbols.update(syms)
             print(f"已发送订阅: {syms}")
 
-    def _send_unsub(syms: list):
-        if not syms:
+    def _send_unsub(raw_syms: list):
+        if not raw_syms:
             return
+        syms, _ = normalize_symbols(raw_syms)
         insts = build_instruments(syms, cfg.exchange)
         with api_call_lock:
             ret = api.ReqUnSubMarketData(insts, 0, conn_id)
@@ -504,6 +665,15 @@ def main():
 
             if cfg.duration > 0 and (time.time() - start) >= cfg.duration:
                 print(f"运行达到 {cfg.duration} 秒，退出。共收到 {tick_count} 条 tick。")
+                if tick_count == 0 and symbols and supports_sub:
+                    print(
+                        "提示: 订阅已发送但没有收到行情，常见原因：\n"
+                        f"  1) 前置与代码交易所不匹配——当前 {cfg.front}"
+                        f"（{EXCHANGE_LABELS.get(cfg.exchange, '未知')}），代码 {', '.join(symbols)}；"
+                        "一台前置只承载一个交易所；\n"
+                        "  2) 非交易时段：订阅后只会回放最后一笔快照，休市时无推送；\n"
+                        "  3) 代码有误，或该账号无此品种权限。"
+                    )
                 break
     except KeyboardInterrupt:
         print(f"\n用户中断。共收到 {tick_count} 条 tick。")

@@ -324,22 +324,37 @@ python setup.py build_ext --inplace
 
 **必须用编译该扩展时所用的同一个 Python 版本**：本机预置扩展是 3.9，所以用 py39；若你在 3.12 环境下按上文重新编译过，就用该 3.12 环境。下文命令中的 `python` 指已激活的环境；不激活时请替换为对应解释器的绝对路径（如 `/opt/conda/envs/py39/bin/python`）。
 
+**`--front` 可以省略。** 脚本会按 `--exchange`、代码后缀（`.SH`/`.SS`/`.SZ`）或代码前缀自动判断交易所，并选择对应的默认前置：
+
+| 交易所 | 默认前置 | 可识别的代码 |
+|---|---|---|
+| 上交所 SSE | `tcp://114.94.154.60:21002` | `6xxxxx`、`5xxxxx`、`900xxx`、`1xxxxxxx`（8 位期权） |
+| 深交所 SZSE | `tcp://183.63.193.58:42116` | `0xxxxx`、`3xxxxx`、`2xxxxx`、`9xxxxxxx`（8 位期权） |
+
+> **一台前置只承载一个交易所**：连错前置时（例如用 SSE 的 21002 拉 `301079`），订阅仍会返回“成功”，但一条行情都不会推送。脚本现在会在连接前校验 `--front` 端口与代码是否匹配，不匹配直接报错并给出正确前置；同一批代码跨交易所也会报错，需要分开运行。
+
 ```bash
 source /opt/conda/etc/profile.d/conda.sh
 conda activate py39
 cd pybind_gtja
 
-# 上交所：21002 前置
+# 上交所：省略 --front，按 6 开头代码自动选 21002 前置
 python pull_data.py \
-    --front tcp://183.193.54.200:21002 \
     --user <账号> \
     --password <密码> \
     --symbols 600000,688027 \
-    --exchange sse \
     --output sse_ticks.csv \
     --duration 60
 
-# 深交所：42116 前置
+# 深交所：省略 --front，按 .SZ 后缀/3 开头代码自动选 42116 前置
+python pull_data.py \
+    --user <账号> \
+    --password <密码> \
+    --symbols 301079.SZ \
+    --output szse_ticks.csv \
+    --duration 60
+
+# 也可以显式指定前置与交易所（必须互相匹配）
 python pull_data.py \
     --front tcp://183.63.193.58:42116 \
     --user <账号> \
@@ -403,10 +418,10 @@ RegisterFront 返回 ConnectID=1
 
 | 参数 | 说明 |
 |------|------|
-| `--front` | 行情前置地址 |
+| `--front` | 行情前置地址，**留空则按代码自动选择**（SSE `tcp://114.94.154.60:21002`，SZSE `tcp://183.63.193.58:42116`）。显式指定时会校验端口与交易所是否匹配，不匹配直接报错 |
 | `--user` / `--password` | 资金账号 / 密码 |
-| `--symbols` | 合约代码，逗号分隔。股票/ETF 6 位数字；期权 8 位数字（上交所 `1` 开头如 `10011425`，深交所 `9` 开头如 `90007411`） |
-| `--exchange` | 仅 `sse` / `szse`，留空表示由前置判断 |
+| `--symbols` | 合约代码，逗号分隔。股票/ETF 6 位数字；期权 8 位数字（上交所 `1` 开头如 `10011425`，深交所 `9` 开头如 `90007411`）。可带 `.SH`/`.SS`/`.SZ` 后缀，如 `301079.SZ`，后缀优先于代码前缀 |
+| `--exchange` | 仅 `sse` / `szse`，留空则按后缀/代码前缀判断。与 `.SZ` 等后缀冲突时报错 |
 | `--cpu` | 接收线程绑定的 CPU 核，默认 `1` |
 | `--no-efvi` | 关闭 efvi 加速 |
 | `--levels` | CSV 保存的盘口档位数，默认 `5` |
@@ -551,7 +566,8 @@ iopv          = extra.IOPV        if extra else None
 - **CTP 连接超时** — 检查 `MARKET_DATA_SERVERS` 中的地址与端口、本机防火墙及网络连通性。
 - **`ModuleNotFoundError: No module named 'gtja_udp_api'`** — 九成是 Python 版本与扩展的 ABI 标签不一致（.so 文件名里的 `cpython-3xx`）。Python 3.11/3.12 会直接忽略 `cpython-39` 的 `.so`。`pull_data.py` 现在会打印已有的 `.so` 版本、当前解释器版本和两种解决办法；快速处理：要么切到匹配的解释器，要么在当前解释器下 `rm -rf build && python setup.py build_ext --inplace` 重编。
 - **`gtja_udp_api` 找不到 `libGtjaMdUserApi.so`** — 说明 `.so` 的 rpath 指向了不存在的旧路径（如 `/root/private_data/trading/udpapi`），在新环境里重新编译即可重写 rpath；或临时 `export LD_LIBRARY_PATH=/root/private_data/Market_Data/udpapi_new/Linux64/gcc9.3.1:$LD_LIBRARY_PATH`。
-- **登录成功但无行情** — 检查股票代码与交易所是否匹配、是否处于交易时段；只能使用 6 位沪深股票/ETF 代码，期货合约即使订阅成功也不会收到数据。
+- **深交所代码（如 `301079`）一条行情都收不到** — 最常见原因是连了上交所前置（`21002`）。**一台前置只承载一个交易所**，连错时订阅仍返回“成功”，但不会推送任何行情。`pull_data.py` 现在会按代码自动选择前置，并在显式 `--front` 与代码交易所冲突时直接报错；若使用自定义前置，请确认端口/所属交易所，并用 `--exchange szse` 或 `.SZ` 后缀明确。
+- **登录成功但无行情** — 先确认前置与代码交易所匹配（见上一条），再检查是否处于交易时段、账号是否有该品种权限；只能使用 6 位沪深股票/ETF 或 8 位期权代码，期货合约即使订阅成功也不会收到数据。`--duration` 结束且 0 条 tick 时脚本会打印排查提示。
 - **换 SDK 版本后导入报错或收到乱码** — V3.7.1.1 对 `OnRtnDepthSnapshot` 做了 ABI 破坏性改动，**旧扩展不能配新库**（反之亦然）。必须用同一份 `udpapi_new` 头文件重新编译扩展；`python setup.py build_ext --inplace --force`。
 - **`Release()` 卡住不返回** — 只发生在旧的 V3.7.0.6；V3.7.1.1 已修复，用 `verify_release.py` 复验（见「验证 Release」）。
 - **`dyn_ref_price` / `vir_match` / `iopv` 三列一直为空** — 不是客户端问题，是前置没有下发 `SecurityExtraInfo` 数据块，见「SecurityExtraInfo：动态参考价 / 虚拟匹配量 / IOPV」一节。
